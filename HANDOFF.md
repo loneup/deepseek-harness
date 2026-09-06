@@ -1,15 +1,15 @@
 # HANDOFF · 当前交接状态
 
-更新时间：2026-09-06（Nexus 兼容层迁移会话，第七轮：审查结论 P1/P2 修正）
+更新时间：2026-09-07（Nexus 兼容层迁移会话，第八轮：commit 拆分落地 + 复核修正完成，待 push 授权）
 
 ## 冻结信息（Stage freeze）
 
 | 项 | 值 |
 |---|---|
-| dsh 仓库 | /Users/liyan/deepseek-harness，分支 `master`，HEAD `c02ff3445150ebece9da48ffde717ce600df4f0e`，工作树未提交文件（迁移产物 + 用户既有修改 + 第三至五轮产物，均未 commit；第五轮含上游 agent-loop/ACP 竞态修复与 Node 24.11.1 统一，未提交数以 `git status` 实查为准） |
+| dsh 仓库 | /Users/liyan/deepseek-harness，分支 `master`，领先 origin/master（`d347e70390`）13 个 commit（基线 `c02ff34` 1 个 + 本会话 12 个，含本文件所在的第八轮复核勘误 commit；HEAD SHA 以 `git log -1` 实查为准），**未 push**；工作树剩余 36 项未提交 = 用户既有内容（含从 commit 3 拆回的 startup.spec 两处 3080→3000 hunk，见第八轮记录） |
 | Nexus 仓库 | /Users/liyan/01_Projects/iOS/nexus-app，分支 `main`，HEAD `258f9d00cea230481059ce339358cdeacfd82296`，工作树干净，未修改 |
 | dsh 版本 | 0.1.3-alpha.1 |
-| 适配器绑定 | Dsh013Adapter ↔ Nexus Port v1 ↔ dsh `0.1.3-alpha.1` @ `c02ff34`（commit 待人拍板后固化 SHA） |
+| 适配器绑定 | Dsh013Adapter ↔ Nexus Port v1 ↔ dsh `0.1.3-alpha.1` @ `c02ff34`（迁移已 commit：`5866abf98a` compat seam → `2deccba10f` bridge 接线，SHA 已固化） |
 | 版本锁定策略 | 见 DECISIONS.md D5；升级流程：新 dsh 版本 → 复制适配器为 Dsh014Adapter → 对同一批契约测试跑 `Dsh014Adapter → NexusDshPort contract` → 失败集中在适配器 |
 
 ## 阶段状态总表
@@ -75,7 +75,7 @@
 | `pnpm run test:e2e` | ✅ **src 模式全绿（第五轮修复后）** | 全量 e2e 车道 src 模式 **36 文件 137 测试全过、0 失败**（73 跳过为外部凭证/平台门控，与此前一致）。此前 10 项 ENOENT `.sessions` 失败根因为上游 agent-loop 构造期持久化接合在 src 模式下输掉加载时序（KNOWN_ISSUES #10b），第五轮已修复（loader 安定门 + ACP 冗余通知抑制），**零测试断言改动**。lib 模式（CI 同款）10/10 保持全过 | |
 | `pnpm run hygiene` | ✅ 16/16 | exit 0，18.05s |
 
-**本轮改动文件**（均未 commit，待与既有 68 项一并人审）：
+**本轮改动文件**（历史记录：第三轮当时均未 commit；后已随第八轮 commit 拆分入库，当前状态见冻结信息与第八轮节）：
 - 修改 `apps/web/tests/preview-boot.e2e.ts`（418 行正则回退 + 注释；479 行豁免为前任正确改动，保留）
 - 新增 `.nvmrc`（`22.23.1`）
 - 新增 `scripts/node-version-pin.ts` + `scripts/node-version-pin.spec.ts`
@@ -216,28 +216,36 @@ PATH="/tmp/py314-bin:$PATH" pnpm run test
 
 ## 第八轮（2026-09-06）· commit 拆分执行（人审授权：第七轮审查结论"技术上可以进入 commit 拆分"）
 
-> 审查前置两处文档修正已先行完成（HANDOFF 剩余项勘误、审查包 18331/1→标注历史+复核 18332/0）。拆分期间 `pnpm-lock.yaml` 内容零变动（SHA `7f136d…` 与 manifest 一致，无需再生成）。**未 push**（master 领先 origin 11）；3000/3088 全程未动。
+> 审查前置两处文档修正已先行完成（HANDOFF 剩余项勘误、审查包 18331/1→标注历史+复核 18332/0）。拆分期间 `pnpm-lock.yaml` 内容零变动（SHA `7f136d…` 与 manifest 一致，无需再生成）。**未 push**（拆分时点领先 origin 12 = 基线 1 + 本会话 11；第八轮复核修正 commit 后为 13，见冻结信息）；3000/3088 全程未动。
 
 | # | Commit | 内容 |
 |---|---|---|
 | 1 | `5866abf98a` `feat(nexus): add dsh-host-nexus-compat port seam` | compat 包（17 文件）+ Agent Note ×3 + 根 tsconfig.host.json + tsconfig.base.json 别名 + ui-settings-nexus/tsconfig.host.json |
 | 2 | `2deccba10f` `refactor(nexus): route the bridge through NexusDshPort` | nexus-bridge 主体（README/package/tsconfig/8 源码/8 spec + helpers）+ web-app 接线（patch.yml/package.json）+ pnpm-lock + web-agent-presets/preview-boot 适配 |
-| 3 | `041353d144` `test(nexus): startup HTTP surface + isolation gates` | web-app startup.spec（⚠ 含用户既有修改）+ isolation.gate.spec |
-| 4 | `0b4ce14d5a` `feat(nexus): dual web environments with release manifests` | environment.ts + environment/plugin-manifest specs + run-web-env.ts + node-version-pin.ts/.spec + .nvmrc（24.11.1）+ 根 package.json web 脚本 + release-manifests/（再生成后版本） |
-| 5 | `bd4c15e0d1` `fix(agent-loop): wait for loader tree before reading session persistence` | F1：agent-loop src/package.json + loader-composition.spec 回归 |
-| 6 | `b95c4c9103` `fix(acp): suppress redundant config-option notifications` | F2：acp session.ts |
-| 7 | `b51f1d521f` `chore(ci): pin node 24.11.1 and adapt md-wrap glob` | F3：15 workflows + verify-md-wrap 固定深度模式 |
-| 8 | `eb01e5e03d` `docs(nexus): integrate nexusDsh into catalogs and generated docs` | gen-cordis-catalog/gen-doc-graphs/api-catalog + 14 个生成文档 |
-| 9 | `61a90a7525` `test(web): stabilize queue-actions e2e retries` | queue-actions 限定 retry（KNOWN_ISSUES #9） |
-| 10 | `b99332293c` `docs(nexus): migration records, handoff, and fork patches` | 四份项目文档 + migration/（清单/审查包/二开补丁）+ .gitattributes 补丁豁免 |
+| 3 | `dea5dcf2b4` `test(nexus): startup HTTP surface + isolation gates` | web-app startup.spec（新 HTTP 面测试；原混入的两处用户 3080→3000 hunk 已在第八轮复核 P1 中拆回工作树）+ isolation.gate.spec |
+| 4 | `eeabff9e88` `feat(nexus): dual web environments with release manifests` | environment.ts + environment/plugin-manifest specs + run-web-env.ts + node-version-pin.ts/.spec + .nvmrc（24.11.1）+ 根 package.json web 脚本 + release-manifests/（再生成后版本） |
+| 5 | `647d1ad3a9` `fix(agent-loop): wait for loader tree before reading session persistence` | F1：agent-loop src/package.json + loader-composition.spec 回归 |
+| 6 | `44f9717a7a` `fix(acp): suppress redundant config-option notifications` | F2：acp session.ts |
+| 7 | `7795178dc8` `chore(ci): pin node 24.11.1 and adapt md-wrap glob` | F3：15 workflows + verify-md-wrap 固定深度模式 |
+| 8 | `2cfb7c9efb` `docs(nexus): integrate nexusDsh into catalogs and generated docs` | gen-cordis-catalog/gen-doc-graphs/api-catalog + 14 个生成文档 |
+| 9 | `c35e82c5a0` `test(web): stabilize queue-actions e2e retries` | queue-actions 限定 retry（KNOWN_ISSUES #9） |
+| 10 | `4b5963abf0` `docs(nexus): migration records, handoff, and fork patches` | 四份项目文档 + migration/（清单/审查包/二开补丁）+ .gitattributes 补丁豁免 |
+| 11 | `059441b760` `docs(nexus): record the commit split in handoff and fork register` | 拆分记录回填（HANDOFF 第八轮节 + CHANGELOG + fork 清单升级说明） |
+| 12 | （复核修正，SHA 以 `git log -1` 实查为准）`docs(nexus): extract user hunks from commit 3 and refresh handoff state` | 第八轮复核 P1（commit 3 用户 hunk 外科 rebase 拆回 + SHA 重写）+ P2（冻结信息/领先数/轮次标记/hooks 计数/日期等文档状态同步） |
 
-**拆分执行说明**：① 与五步方案的偏差——lockfile 按原方案随 commit 2；`.nvmrc`+`node-version-pin` 随 commit 4（run-web-env 运行时依赖 .nvmrc，先于 F3 落盘保证自洽）；ui-settings-nexus/tsconfig.host.json 提前到 commit 1（根 tsconfig.host.json 的 reference 需立即可解析）。② lefthook whitespace hook 曾拦截 commit 10（补丁文件的 unified-diff 空行上下文=单空格，格式固有），以 `.gitattributes` 对 `migration/patches/*.patch` 豁免 trailing-space 解决（补丁逐字节未动，reverse-check 复验通过）。③ 全部 10 个 commit 的 pre-commit hooks（translation-pairing/oxlint/third-party-notices/whitespace/vendor-guard）原生通过，未用 --no-verify。
+> 注：第八轮复核 P1 修正后 commit 3-11 的 SHA 已改写（外科 rebase 拆回 startup.spec 两处用户 hunk，见下方"第八轮复核 P1 修正"小节）；上表为改写后的最终 SHA。第 12 个 commit 自身在复核迭代中多次 amend，故不固化字面 SHA。
 
-**剩余未提交（35 项，全部为用户既有内容，按五步方案第 5 步由用户单独处置）**：ui-settings-nexus 包主体（2 M + 13 ??，除已入库的 tsconfig.host.json）、slot-catalog.ts（设置 tab 槽位注册）、tsconfig.client.json、apps/cli/reference README×3、section.expected.md、verify-package-readme-model-experience.ts、用户 Agent Note ×6（2026-08-25 ×3、sessioncontroller ×3）、bridge 旧 .disabled/.backup/.stub 文件 ×7。
+**拆分执行说明**：① 与五步方案的偏差——lockfile 按原方案随 commit 2；`.nvmrc`+`node-version-pin` 随 commit 4（run-web-env 运行时依赖 .nvmrc，先于 F3 落盘保证自洽）；ui-settings-nexus/tsconfig.host.json 提前到 commit 1（根 tsconfig.host.json 的 reference 需立即可解析）。② lefthook whitespace hook 曾拦截 commit 10（补丁文件的 unified-diff 空行上下文=单空格，格式固有），以 `.gitattributes` 对 `migration/patches/*.patch` 豁免 trailing-space 解决（补丁逐字节未动，reverse-check 复验通过）。③ 本会话全部 commit（迁移 10 个 + 拆分记录与复核修正文档 2 个）的 pre-commit hooks（translation-pairing/oxlint/third-party-notices/whitespace/vendor-guard）原生通过，未用 --no-verify。
+
+**剩余未提交（36 项，全部为用户既有内容，按五步方案第 5 步由用户单独处置）**：ui-settings-nexus 包主体（2 M + 13 ??，除已入库的 tsconfig.host.json）、slot-catalog.ts（设置 tab 槽位注册）、tsconfig.client.json、apps/cli/reference README×3、section.expected.md、verify-package-readme-model-experience.ts、用户 Agent Note ×6（2026-08-25 ×3、sessioncontroller ×3）、bridge 旧 .disabled/.backup/.stub 文件 ×7、**startup.spec.ts 两处 3080→3000 hunk（第八轮复核 P1：从 commit 3 拆回，stash@{0} 实证为拆分前已存在的用户修改，未经单独授权不入库）**。
+
+### 第八轮复核 P1 修正（commit 3 hunk 拆回，2026-09-06）
+
+复核发现 commit 3（现 `dea5dcf2b4`，原 `041353d144`）混入两处提交前已有的用户修改（startup.spec.ts 的 fixture 默认端口与其期望值 3080→3000，成对自洽，与新 HTTP 面测试无关；`stash@{0}` nexus-wip-before-update-2026-09-05 实证）。处置：**外科 rebase 拆回**——`GIT_SEQUENCE_EDITOR` 脚本化 `git rebase -i --autostash` 停在 commit 3，两行 sed 还原 3080 原值后 amend，`git rebase --continue` 重放后续 8 个 commit（无冲突），再把 3000 版本恢复回工作树成为未提交改动。验证：**3080（committed）与 3000（工作树）双版本 startup.spec 各 8/8 通过**；三补丁 reverse-check 复验通过；lockfile 零变动。**代价：commit 3-11 的 SHA 全部改写**（本文件与 CHANGELOG/fork 清单已同步更新为新 SHA）；因未 push，改写无外部影响。
 
 ## 下一步
 
-1. **commit 拆分已就绪待人审**：全部门禁绿（tsc/lint/duplication/check:ci:static 45/45/test:web:built/hygiene/全量单测/e2e **src 模式全绿**），按 `migration/worktree-manifest-2026-09-05.md` 的 5 步拆分建议人审后 commit（commit 后把 SHA 回填到上表"适配器绑定"行）。第五轮新增改动建议拆为独立 commit：`fix(agent-loop): wait for loader tree before reading session persistence` + `fix(acp): suppress redundant config-option notifications` + `chore(ci): pin node 24.11.1 and adapt md-wrap glob`（.nvmrc + 15 workflows + fs-ext 重建说明 + verify-md-wrap 模式）。**commit 本身即是最强的二开保护**（tracked 修改入库后 pull 走正常 merge/rebase 而非覆盖）——与 `migration/fork-modifications-2026-09-06.md` 补丁机制互补。
+1. **commit 拆分已完成（第八轮，人审授权），待 push 授权**：12 个 commit 已入库（10 个迁移 commit + 1 个拆分记录 commit + 1 个复核修正 commit，见第八轮节 SHA 表）；第八轮复核后已把 commit 3 中两处未经授权的用户既有 hunk（startup.spec 3080→3000）拆回工作树。剩余待办：① push 需人审明确授权（当前领先 origin 13，含本勘误 commit）；② 工作树 36 项用户既有内容由用户单独处置（建议：ui-settings-nexus 包 + slot-catalog + tsconfig.client.json 作为一个 `feat` commit；bridge 旧 `.disabled/.backup/.stub` ×7 确认无用后删除）。
 2. **Python PATH 永久修复（人审决策）**：把 `/opt/homebrew/bin` 提前（`.zshrc` 早段 `eval "$(/opt/homebrew/bin/brew shellenv)"`）或引入仓库级 Python 版本管理。
 3. 真机 Golden Path 验收（配对 → 会话 → turn → 审批应答 → 断线恢复）——需要真机，属于人工验收；协议层已由单测与真实链路验收覆盖。
 4. Agent Note 从 proposed 转正由人裁决。

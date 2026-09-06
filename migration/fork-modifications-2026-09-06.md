@@ -1,6 +1,6 @@
 # dsh 二开（fork）修改清单 · 2026-09-06
 
-> **2026-09-06 更新（第八轮 commit 拆分后）**：F1/F2/F3 已全部入库——`bd4c15e0d1`（F1 agent-loop loader 安定门）、`b95c4c9103`（F2 ACP 冗余通知抑制）、`b51f1d521f`（F3 Node 钉点 + md-wrap glob）。**commit 已成为二开的第一层保护**（pull 走正常 merge/rebase 而非覆盖）；本清单的补丁降级为第二层保险（工作树被 `git checkout`/`reset` 硬还原时使用）。撤销条件与恢复流程继续有效。
+> **2026-09-06 更新（第八轮 commit 拆分后）**：F1/F2/F3 已全部入库——`647d1ad3a9`（F1 agent-loop loader 安定门）、`44f9717a7a`（F2 ACP 冗余通知抑制）、`7795178dc8`（F3 Node 钉点 + md-wrap glob）。**commit 已成为二开的第一层保护**（pull 走正常 merge/rebase 而非覆盖）；本清单的补丁降级为第二层保险（工作树被 `git checkout`/`reset` 硬还原时使用）。撤销条件与恢复流程继续有效。
 >
 > **政策**（用户指示）：尽量不修改 dsh 上游源码——每次上游更新都要跟着改。确有必要时可以二开，但**必须登记本清单**并区分原版与二开，避免 `git pull` / `git checkout` 时被覆盖后无从恢复。
 >
