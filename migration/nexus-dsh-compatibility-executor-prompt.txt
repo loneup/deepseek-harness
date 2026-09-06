@@ -1,0 +1,544 @@
+Nexus 与 DeepSeek Harness 兼容层迁移实施方案
+一、文档目标
+本方案用于将 Nexus Bridge 与 DeepSeek Harness 之间的直接耦合改造成稳定的兼容适配层。
+目标结构：
+Nexus v4 HTTP/SSE 协议
+    ↓
+nexus-bridge
+    ↓
+NexusDshPort 稳定接口
+    ↓
+nexus-dsh-compat 兼容层
+    ↓
+DeepSeek Harness 0.1.3-alpha.1 或未来版本
+完成后，nexus-bridge 不再直接依赖 DeepSeek Harness 的具体 API、错误类型、事件类型或内部品牌类型。
+未来 DeepSeek Harness 普通 API 变化时，主要修改 nexus-dsh-compat，不再大范围修改 nexus-bridge、ui-settings-nexus 和 iOS 客户端。
+二、当前基线
+DeepSeek Harness 仓库：
+/Users/liyan/deepseek-harness
+Nexus iOS 仓库：
+/Users/liyan/01_Projects/iOS/nexus-app
+当前 dsh 版本：
+0.1.3-alpha.1
+验证命令：
+cd /Users/liyan/deepseek-harness
+pnpm dsh --version
+当前已知状态：
+1. nexus-bridge 已从旧 apiProxy 迁移到 ctx.sessionController 和 ctx.subagents。
+2. 迁移代码仍然与 dsh 的具体类型和 API 强耦合。
+3. ui-settings-nexus 曾被临时禁用，真实实现保存在 disabled 文件中。
+4. 3000 端口曾经可以返回 /nexus/health，但 Web client 插件资源全部返回 404。
+5. 典型错误为：
+client-modules: HTML did not preload client.js
+6. 当前工作树包含用户未提交修改，执行者不得覆盖、清理或回滚这些修改。
+三、操作边界
+执行前必须读取：
+/Users/liyan/deepseek-harness/AGENTS.md
+/Users/liyan/deepseek-harness/HANDOFF.md
+/Users/liyan/deepseek-harness/KNOWN_ISSUES.md
+/Users/liyan/deepseek-harness/DECISIONS.md
+执行期间必须遵守：
+1. 不执行 git reset --hard。
+2. 不执行 git checkout --。
+3. 不删除 .disabled、.backup 或用户已有文件。
+4. 不覆盖用户未提交修改。
+5. 不提交密钥、token、真实用户数据或 .env。
+6. 不通过删除测试、放宽断言或跳过失败来获得绿色结果。
+7. 未经用户授权不创建 commit、push、rebase、发布或部署。
+8. 所有新增或修改文件使用 apply_patch。
+9. 每个非机械架构切片必须新增或更新测试。
+10. 非平凡架构变更必须增加 Agent Note。
+11. 不能用方法存在性检查作为隐式版本兼容方案。
+12. 配置错误必须在加载阶段或最早可识别的位置失败。
+四、阶段总览
+阶段 S0：修复 Web client 插件静态资源 404。
+阶段 S1：定义 NexusDshPort 稳定接口。
+阶段 S2：实现 dsh 0.1.3-alpha.1 适配器。
+阶段 S3：集中错误映射和事件映射。
+阶段 S4：通过 Cordis provider 注入兼容层。
+阶段 S5：让 nexus-bridge 只依赖 NexusDshPort。
+阶段 S6：迁移历史、实时事件和审批逻辑。
+阶段 S7：迁移 Subagent。
+阶段 S8：执行 Web Loader 和真实组合测试。
+阶段 S9：执行 iOS 协议回归。
+阶段 S10：建立未来 dsh 版本兼容矩阵。
+阶段顺序不能跳过。S0 至 S8 通过前，不得声称整个迁移完成，也不得优先修改 iOS。
+五、阶段 S0：修复 Web 插件静态资源
+目标：
+以下地址必须返回 HTTP 200：
+/plugins/client.js
+/plugins/client.js
+/plugins/client.js
+检查文件：
+packages/bundle/web-app/package.json
+packages/bundle/web-app/cordis.patch.yml
+packages/bundle/web-app/tests/startup.spec.ts
+packages/client/ui-settings-nexus/package.json
+packages/client/ui-settings-nexus/src/client/index.ts
+packages/client/ui-settings-nexus/src/client/NexusSettingsTab.tsx
+实施步骤：
+1. 确认 3000 端口对应的进程来自 /Users/liyan/deepseek-harness。
+2. 检查 Web bundle 是否挂载 client-modules、client-runtime 和 ui-settings-nexus。
+3. 检查这些插件的 lib 或 bundle 产物是否存在。
+4. 执行 host 和 client 构建。
+5. 正常停止旧 Web 进程。
+6. 从 DeepSeek Harness 仓库根目录重新启动 Web profile。
+7. 使用 curl 验证插件 URL。
+构建命令：
+cd /Users/liyan/deepseek-harness
+pnpm install
+pnpm run build:lib:host
+pnpm run build:lib:client
+pnpm run build
+启动命令：
+pnpm dsh --profile web --port 3000
+验证命令：
+curl -i http://127.0.0.1:3000/nexus/health
+curl -i http://127.0.0.1:3000/plugins/@deepseek-ai/dsh-client-modules/client.js
+curl -i http://127.0.0.1:3000/plugins/@deepseek-ai/dsh-client-runtime/client.js
+curl -i http://127.0.0.1:3000/plugins/@deepseek-ai/dsh-client-ui-settings-nexus/client.js
+通过标准：
+1. 三个插件 URL 都返回 HTTP 200。
+2. Content-Type 为 JavaScript。
+3. 响应体非空。
+4. /nexus/health 返回 HTTP 200。
+5. 首页不再显示 Failed to load plugins。
+6. 浏览器不再显示 HTML did not preload。
+自动化测试应加入：
+packages/bundle/web-app/tests/startup.spec.ts
+测试内容：
+1. client-modules 脚本返回 200。
+2. client-runtime 脚本返回 200。
+3. ui-settings-nexus 脚本返回 200。
+4. 三个响应体非空。
+5. 首页可以完成插件启动。
+六、阶段 S1：定义 NexusDshPort
+建议新建目录：
+packages/host/nexus-dsh-compat/
+建议包名：
+@deepseek-ai/dsh-host-nexus-compat
+建议文件：
+packages/host/nexus-dsh-compat/package.json
+packages/host/nexus-dsh-compat/tsconfig.json
+packages/host/nexus-dsh-compat/tsdown.config.ts
+packages/host/nexus-dsh-compat/src/index.ts
+packages/host/nexus-dsh-compat/src/port.ts
+packages/host/nexus-dsh-compat/src/types.ts
+packages/host/nexus-dsh-compat/src/errors.ts
+packages/host/nexus-dsh-compat/src/events.ts
+packages/host/nexus-dsh-compat/src/dsh-013-adapter.ts
+packages/host/nexus-dsh-compat/src/plugin.ts
+NexusDshPort 必须提供以下能力：
+listSessions(signal)
+createSession(request)
+getModelCatalog()
+selectModel(request)
+prompt(request, signal)
+cancelSession(sessionId)
+readHistory(request, signal)
+listSubagents(parentSessionId, signal)
+promptSubagent(request, signal)
+interruptSubagent(request)
+subscribeSession(sessionId, listener)
+公共接口不得暴露以下 dsh 专属类型：
+SessionController
+SubagentRuntime
+SessionAddress
+SessionRequestId
+SubagentPromptRequestId
+RemoteError
+SessionWireEvent
+建议使用 Nexus 自己的品牌类型：
+NexusSessionId
+NexusRequestId
+稳定接口中的请求和返回值应该使用 Nexus 自有类型。所有 dsh 类型转换只能位于适配器包内部。
+S1 测试：
+packages/host/nexus-dsh-compat/tests/port.contract.spec.ts
+必须覆盖：
+1. 空 session ID 被拒绝。
+2. 空 request ID 被拒绝。
+3. request ID 在调用过程中保持不变。
+4. queue 和 steer 模式保持不变。
+5. history 分页字段保持不变。
+6. 公共 Port 类型不引用 dsh 专属类型。
+七、阶段 S2：实现 dsh 0.1.3-alpha.1 适配器
+新增：
+packages/host/nexus-dsh-compat/src/dsh-013-adapter.ts
+适配器类：
+Dsh013Adapter implements NexusDshPort
+当前 dsh API 的准确调用方式：
+ctx.sessionController.list({}, signal)
+ctx.sessionController.create(request)
+ctx.sessionController.modelCatalog()
+ctx.sessionController.selectModel(request)
+ctx.sessionController.prompt(request, signal)
+ctx.sessionController.cancel(request)
+ctx.sessionController.page(request, signal)
+ctx.subagents.remoteExportList(parentSessionId, signal)
+ctx.subagents.prompt(request, signal)
+ctx.subagents.interruptByParent(childSessionId, parentSessionId, 'continuable')
+必须遵守：
+1. modelCatalog 无参数。
+2. create 当前不接 signal。
+3. selectModel 当前不接 signal。
+4. cancel 当前不接 signal。
+5. list、page、prompt 接收 signal。
+6. prompt 必须传 branded requestId。
+7. page 返回 records，不是 events。
+8. SessionAddress 只能在适配器内部构造。
+9. Subagent list 必须调用 remoteExportList，不能通过普通 Session 列表过滤伪造。
+普通 prompt 的内部转换：
+ctx.sessionController.prompt({
+  requestId: request.requestId as SessionRequestId,
+  sessionId: request.sessionId as SessionId,
+  mode: request.mode,
+  content: mapPromptContent(request.content)
+}, signal)
+普通 history 的内部转换：
+ctx.sessionController.page({
+  address: {
+    kind: 'session',
+    sessionId: request.sessionId as SessionId
+  },
+  throughSeq: -1,
+  beforeSeq: request.beforeSeq,
+  maxMessages: request.maxMessages
+}, signal)
+Subagent history 的内部转换：
+ctx.sessionController.page({
+  address: {
+    kind: 'subagent',
+    parentSessionId: request.parentSessionId as SessionId,
+    childSessionId: request.childSessionId as SessionId,
+    mode: request.mode
+  },
+  throughSeq: -1,
+  beforeSeq: request.beforeSeq,
+  maxMessages: request.maxMessages
+}, signal)
+S2 测试文件：
+packages/host/nexus-dsh-compat/tests/dsh-013-adapter.spec.ts
+必须覆盖：
+1. list 调用 sessionController.list({}, signal)。
+2. create 参数转换正确。
+3. modelCatalog 无参数调用。
+4. selectModel 传递 provider、model、reasoningEffort。
+5. prompt 传递 requestId、sessionId、mode、content 和 signal。
+6. cancel 不传 signal。
+7. page 读取 records。
+8. 普通 SessionAddress 转换正确。
+9. Subagent SessionAddress 转换正确。
+10. subagent list 调用 remoteExportList。
+11. subagent prompt 调用 subagents.prompt。
+12. subagent interrupt 调用 interruptByParent。
+八、阶段 S3：集中错误和事件映射
+新增：
+packages/host/nexus-dsh-compat/src/errors.ts
+packages/host/nexus-dsh-compat/src/events.ts
+错误识别必须使用：
+remoteErrorOf(error)
+不得只使用 instanceof RemoteError。
+建议错误映射：
+session/not-found 映射为 unknown_session。
+gateway/bad-request 映射为 malformed。
+gateway/cancelled 映射为 host_cancelled。
+subagent/not-found 映射为 unknown_subagent。
+subagent/unauthorized 映射为 subagent_unauthorized。
+未知错误映射为 host_error。
+错误消息必须脱敏，不向 Nexus 客户端泄露 dsh 内部堆栈和敏感路径。
+事件映射：
+turn/start 映射为 turn.started。
+assistant/chunk 的 text-delta 映射为 message.delta。
+非文本 assistant chunk 忽略。
+assistant/message 映射为 message.committed。
+turn/end completed 映射为 turn.completed。
+turn/end aborted、interrupted、disposed 映射为 turn.cancelled。
+turn/end error 映射为 turn.failed。
+approval/decided 映射为 approval.resolved。
+tool/call 映射为 tool.started。
+tool/result 映射为 tool.result。
+未知事件返回 undefined。
+未知事件不得推进 Nexus sequence。
+S3 测试文件：
+packages/host/nexus-dsh-compat/tests/errors.spec.ts
+packages/host/nexus-dsh-compat/tests/events.spec.ts
+必须覆盖：
+1. 所有已知错误码。
+2. 未知错误。
+3. 跨模块或跨 realm 错误。
+4. 错误消息脱敏。
+5. AbortSignal 取消。
+6. 所有已知 dsh 事件。
+7. 非文本 chunk。
+8. 未知事件。
+9. 未知事件不推进序号。
+10. turn 终态互斥。
+11. tool output 脱敏。
+12. approval outcome 映射。
+九、阶段 S4：Cordis provider
+新增：
+packages/host/nexus-dsh-compat/src/plugin.ts
+声明：
+Context.nexusDsh: NexusDshPort
+建议配置：
+adapter: dsh-013
+加载时必须注入：
+sessionController
+subagents
+要求：
+1. 未知 adapter 在加载阶段失败。
+2. 缺少 sessionController 时失败。
+3. 缺少 subagents 时失败。
+4. 不使用方法存在性检查隐式兼容。
+5. provider 生命周期通过 ctx.effect() 管理。
+6. provider 释放后不保留旧服务引用。
+S4 测试：
+packages/host/nexus-dsh-compat/tests/plugin.spec.ts
+覆盖：
+1. provider 正常注册。
+2. ctx.nexusDsh 可用。
+3. 未知 adapter 加载失败。
+4. 缺少必要注入时加载失败。
+5. provider 释放后服务不可继续使用。
+十、阶段 S5：让 nexus-bridge 只依赖 Port
+修改：
+packages/host/nexus-bridge/src/command.ts
+packages/host/nexus-bridge/src/index.ts
+删除：
+LegacyApiResponse
+wrapResult
+wrapError
+RpcId
+apiProxy getter
+response.result.ok
+直接的 SessionController 类型引用
+直接的 SubagentRuntime 类型引用
+Bridge 构造器改为接收：
+NexusDshPort
+Bridge 只允许调用：
+this.dsh.listSessions(...)
+this.dsh.createSession(...)
+this.dsh.getModelCatalog(...)
+this.dsh.selectModel(...)
+this.dsh.prompt(...)
+this.dsh.cancelSession(...)
+this.dsh.readHistory(...)
+this.dsh.listSubagents(...)
+this.dsh.promptSubagent(...)
+this.dsh.interruptSubagent(...)
+S5 测试文件：
+packages/host/nexus-bridge/tests/command-port.spec.ts
+测试：
+1. session.list 正常响应。
+2. session.create 正常响应。
+3. session.models 正常响应。
+4. session.selectModel 正常响应。
+5. turn.start 使用 queue。
+6. turn.queue 使用 queue。
+7. turn.steer 使用 steer。
+8. turn.cancel 调用 cancelSession。
+9. 空 prompt 返回 empty_prompt。
+10. kill switch 返回 kill_switch_engaged。
+11. workspace 白名单继续生效。
+12. unknown method 返回 unknown_method。
+13. Bridge 不直接依赖 dsh 具体 API。
+十一、阶段 S6：历史、实时事件和审批
+session.open 流程必须保持：
+读取历史
+    ↓
+发送历史种子
+    ↓
+发送 session.subscribed anchor
+    ↓
+订阅实时事件
+Bridge 当前建议继续使用：
+ctx.on('session/event')
+不要在本次迁移中同时使用：
+ctx.on('session/event')
+ctx.sessionController.follow()
+否则可能重复发送事件。
+follow 可以作为未来独立重构，不应在本次迁移中与现有广播并行接入。
+内部回看事件时使用：
+session.snapshotEvents()
+不要使用：
+session.events
+审批继续使用：
+ctx.on('approval/request', ...)
+并且 waterfall listener 必须调用 next()。
+S6 测试文件：
+packages/host/nexus-bridge/tests/session-open.spec.ts
+必须覆盖：
+1. 历史事件先于 anchor。
+2. anchor 先于后续实时事件。
+3. 历史事件顺序保持不变。
+4. 未映射事件不推进序号。
+5. 断线重连不重复历史。
+6. sequence gap 能被检测。
+7. session.open 不暴露 dsh 原始事件名。
+8. approval.request 被 Nexus session 正确发布。
+9. approval.respond 可以 settle pending approval。
+10. 已完成审批不能重复响应。
+11. 非 Nexus session 继续调用 next()。
+12. 审批取消映射为 host_cancelled。
+十二、阶段 S7：Subagent
+Subagent 必须通过兼容层操作。
+适配器内部调用：
+ctx.subagents.remoteExportList(parentSessionId, signal)
+ctx.subagents.prompt(request, signal)
+ctx.subagents.interruptByParent(childSessionId, parentSessionId, 'continuable')
+Subagent history 内部使用 SessionAddress，但不能暴露给 Bridge。
+必须覆盖：
+1. 正常 subagent.list。
+2. 空列表。
+3. parent 不存在。
+4. child 不属于 parent。
+5. child 不可继续。
+6. one-shot child 被错误 prompt。
+7. interrupt 重复调用。
+8. 诊断行原样保留。
+9. request ID 保留。
+10. 子代理历史分页。
+11. 未知 child。
+12. 非法 mode。
+测试文件：
+packages/host/nexus-dsh-compat/tests/subagent.spec.ts
+packages/host/nexus-bridge/tests/subagent-command.spec.ts
+十三、阶段 S8：Web Loader 和组合测试
+恢复或更新：
+packages/host/nexus-bridge/tests/nexus-bridge.spec.ts
+packages/host/nexus-bridge/tests/admin.spec.ts
+packages/host/nexus-bridge/tests/mapping.spec.ts
+packages/client/ui-settings-nexus/tests/nexus-settings.client.spec.tsx
+packages/bundle/web-app/tests/startup.spec.ts
+必须验证加载顺序：
+WebServer
+SessionController
+SubagentRuntime
+Nexus compatibility provider
+Nexus Bridge
+UI Settings Nexus
+必须验证路由：
+GET /nexus/health
+POST /nexus/handshake
+POST /nexus/command
+GET /nexus/events
+GET /nexus/admin/device.list
+POST /nexus/admin/device.revoke
+真实 Session 流程：
+session.create
+session.list
+session.open
+turn.start
+session.event
+turn.completed
+turn.cancel
+真实 Subagent 流程：
+subagent.list
+subagent.history
+subagent.prompt
+subagent.interrupt
+构建和测试命令：
+cd /Users/liyan/deepseek-harness
+pnpm exec tsc -b tsconfig.host.json
+pnpm exec tsc -b tsconfig.client.json
+pnpm run build
+pnpm run test:web:built
+通过标准：
+1. Web 页面正常显示。
+2. 三个 client 插件 URL 返回 200。
+3. /nexus/health 返回 200。
+4. Session 路由通过。
+5. Subagent 路由通过。
+6. SSE 不重复、不丢失、不乱序。
+7. Admin route 仍然可用。
+8. UI Settings 插件可以加载。
+9. Web Loader 真实组合测试通过。
+十四、阶段 S9：iOS 协议回归
+只有 S0 至 S8 全部通过后执行。
+如果以下内容没有改变，iOS 不需要修改业务代码：
+Nexus v4 handshake
+command request/response
+SSE envelope
+sequence 语义
+错误码
+session.open 响应字段
+subagent wire 字段
+iOS 测试：
+cd /Users/liyan/01_Projects/iOS/nexus-app
+npm test
+swift test --package-path ios/NexusCore
+模拟器构建：
+xcodebuild -project ios/NexusApp/NexusApp.xcodeproj -scheme NexusApp -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+必须验证：
+1. handshake v4。
+2. session list/open。
+3. turn start/queue/steer/cancel。
+4. 历史回放。
+5. SSE 实时事件。
+6. sequence anchor。
+7. 断线恢复。
+8. subagent list/history/prompt/interrupt。
+9. approval request/respond。
+10. kill switch。
+11. workspace error。
+12. 错误码展示。
+十五、阶段 S10：未来版本兼容矩阵
+建议记录：
+dsh 0.1.3-alpha.1 → Dsh013Adapter → NexusPort v1
+dsh 0.1.4-alpha.1 → Dsh014Adapter → NexusPort v1
+dsh 0.2.x → 重新评估 → NexusPort v1 或 v2
+每个适配器执行相同的契约测试。
+以下变化通常只需要修改兼容适配器：
+1. dsh 方法重命名。
+2. 参数字段变化。
+3. signal 参数变化。
+4. branded ID 变化。
+5. records 或 events 字段变化。
+6. RemoteError 错误码变化。
+7. SessionAddress 变化。
+8. Subagent API 重组。
+9. dsh 事件内部字段变化。
+10. dsh 包名变化。
+以下变化不能保证只修改适配器：
+1. dsh 删除实时事件能力。
+2. dsh 删除历史读取能力。
+3. dsh 删除 Subagent 能力。
+4. dsh 修改 Session 持久化格式。
+5. dsh 改变事件的根本语义。
+6. Nexus v4 协议改变。
+7. sequence 语义改变。
+8. iOS 依赖字段改变。
+十六、回滚方案
+每个阶段独立验证并记录结果。
+回滚要求：
+1. 保留所有 .disabled 和 .backup 文件。
+2. 不使用 destructive Git 命令。
+3. 不覆盖用户已有修改。
+4. 如果兼容层失败，可以先撤销 provider 挂载。
+5. 保留 Bridge 和适配器的测试夹具。
+6. dsh 版本固定到已经通过适配器契约测试的 commit。
+7. 记录每次构建和测试日志。
+8. 回滚后重新验证 /nexus/health 和三个插件 URL。
+十七、完成定义
+只有满足以下条件，才能声明迁移完成：
+1. 三个 Web client 插件 URL 返回 200。
+2. Web 首页无插件加载错误。
+3. nexus-bridge 不再依赖 apiProxy。
+4. nexus-bridge 不直接依赖 dsh 内部 API。
+5. 所有 dsh API 调用集中在兼容适配器。
+6. 所有错误映射集中在兼容适配器。
+7. 所有事件映射集中在兼容适配器。
+8. Session 流程通过。
+9. Subagent 流程通过。
+10. 审批流程通过。
+11. SSE 重放、顺序和恢复通过。
+12. Web Loader 真实组合测试通过。
+13. Node 测试通过。
+14. NexusCore Swift 测试通过。
+15. iOS Simulator build 通过。
+16. 真机验收结果已记录。
+17. HANDOFF.md 已更新。
+18. CHANGELOG.md 已更新。
+19. KNOWN_ISSUES.md 已更新。
+20. DECISIONS.md 已更新。
+21. Agent Note 已增加。

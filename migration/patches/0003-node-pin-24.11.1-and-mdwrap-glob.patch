@@ -1,0 +1,243 @@
+diff --git a/.github/workflows/build-exe-for-python-sdk.yml b/.github/workflows/build-exe-for-python-sdk.yml
+index c00241b0e0..3f93d54d3c 100644
+--- a/.github/workflows/build-exe-for-python-sdk.yml
++++ b/.github/workflows/build-exe-for-python-sdk.yml
+@@ -174,7 +174,7 @@ jobs:
+       # the Linux architectures sharing runner.os stay on separate caches.
+       - uses: actions/setup-node@v6
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+ 
+       - uses: actions/setup-python@v6.3.0
+diff --git a/.github/workflows/build-preview-cloudflare.yml b/.github/workflows/build-preview-cloudflare.yml
+index 5f67b97893..ddce91dccf 100644
+--- a/.github/workflows/build-preview-cloudflare.yml
++++ b/.github/workflows/build-preview-cloudflare.yml
+@@ -21,7 +21,7 @@ permissions:
+   pull-requests: write
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   # Cloudflare Pages project receiving the upload. Its preview deployments are
+   # the surface the Access application protects; the project's production branch
+   # is deliberately a name no deployment uses, so no unprotected URL exists.
+diff --git a/.github/workflows/ci-master.yml b/.github/workflows/ci-master.yml
+index 3721045072..6dbb18c072 100644
+--- a/.github/workflows/ci-master.yml
++++ b/.github/workflows/ci-master.yml
+@@ -27,7 +27,7 @@ permissions:
+   contents: read
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   # CI runs must never report to the production telemetry endpoint baked
+   # into apps/cli/cordis.yml (AppCLIEntry disables the row when set).
+   DSH_TELEMETRY_DISABLED: '1'
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 7797fa9f7b..ee3cac3a27 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -6,7 +6,7 @@ permissions:
+   contents: read
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   # CI runs must never report to the production telemetry endpoint baked
+   # into apps/cli/cordis.yml (AppCLIEntry disables the row when set).
+   DSH_TELEMETRY_DISABLED: '1'
+diff --git a/.github/workflows/docs-pages.yml b/.github/workflows/docs-pages.yml
+index 8bac404b2d..15e3c1b17a 100644
+--- a/.github/workflows/docs-pages.yml
++++ b/.github/workflows/docs-pages.yml
+@@ -21,7 +21,7 @@ permissions:
+   contents: read
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   # Projected source links target the public repository, whose history can
+   # differ from this workflow's source repository. This stays on master rather
+   # than following the dispatched tag: that repository advances only to each
+diff --git a/.github/workflows/e2b-e2e.yml b/.github/workflows/e2b-e2e.yml
+index 0442b0e093..d1eb77b5ea 100644
+--- a/.github/workflows/e2b-e2e.yml
++++ b/.github/workflows/e2b-e2e.yml
+@@ -25,7 +25,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v6
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+ 
+       - name: Install (immutable)
+diff --git a/.github/workflows/e2e.yml b/.github/workflows/e2e.yml
+index 099908616c..f9d356a730 100644
+--- a/.github/workflows/e2e.yml
++++ b/.github/workflows/e2e.yml
+@@ -71,7 +71,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v6
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+ 
+       - name: Install (immutable)
+diff --git a/.github/workflows/landlock-run-release.yml b/.github/workflows/landlock-run-release.yml
+index 76d08e9e4c..af416f9699 100644
+--- a/.github/workflows/landlock-run-release.yml
++++ b/.github/workflows/landlock-run-release.yml
+@@ -53,7 +53,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+           cache-dependency-path: pnpm-lock.yaml
+ 
+@@ -92,7 +92,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+           cache-dependency-path: pnpm-lock.yaml
+ 
+@@ -155,7 +155,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           registry-url: https://registry.npmjs.org
+ 
+       - name: Download npm tarballs
+diff --git a/.github/workflows/landlock-run.yml b/.github/workflows/landlock-run.yml
+index 6379c8cdc1..694564265e 100644
+--- a/.github/workflows/landlock-run.yml
++++ b/.github/workflows/landlock-run.yml
+@@ -68,7 +68,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+           cache-dependency-path: pnpm-lock.yaml
+ 
+@@ -119,7 +119,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+           cache-dependency-path: pnpm-lock.yaml
+ 
+diff --git a/.github/workflows/pi-ai-provider-e2e.yml b/.github/workflows/pi-ai-provider-e2e.yml
+index 255c7654e7..523cedbcb6 100644
+--- a/.github/workflows/pi-ai-provider-e2e.yml
++++ b/.github/workflows/pi-ai-provider-e2e.yml
+@@ -36,7 +36,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v6
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+           cache: pnpm
+ 
+       - name: Install (immutable)
+diff --git a/.github/workflows/release-publish.yml b/.github/workflows/release-publish.yml
+index 143df14caa..fa3fa1cd8e 100644
+--- a/.github/workflows/release-publish.yml
++++ b/.github/workflows/release-publish.yml
+@@ -12,7 +12,7 @@ permissions:
+   contents: read
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   DSH_TELEMETRY_DISABLED: '1'
+ 
+ jobs:
+diff --git a/.github/workflows/release-vendor-publish.yml b/.github/workflows/release-vendor-publish.yml
+index a50a408025..bf4c1e7267 100644
+--- a/.github/workflows/release-vendor-publish.yml
++++ b/.github/workflows/release-vendor-publish.yml
+@@ -12,7 +12,7 @@ permissions:
+   contents: read
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   DSH_TELEMETRY_DISABLED: '1'
+ 
+ jobs:
+diff --git a/.github/workflows/release-vendor.yml b/.github/workflows/release-vendor.yml
+index 8e1d531a03..c58b232603 100644
+--- a/.github/workflows/release-vendor.yml
++++ b/.github/workflows/release-vendor.yml
+@@ -23,7 +23,7 @@ concurrency:
+   cancel-in-progress: false
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   DSH_TELEMETRY_DISABLED: '1'
+ 
+ jobs:
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index ad6c64ae67..741aa2eb1b 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -22,7 +22,7 @@ concurrency:
+   cancel-in-progress: false
+ 
+ env:
+-  PRIMARY_NODE_VERSION: '24'
++  PRIMARY_NODE_VERSION: '24.11.1'
+   DSH_TELEMETRY_DISABLED: '1'
+ 
+ jobs:
+diff --git a/.github/workflows/sandbox.yml b/.github/workflows/sandbox.yml
+index d13e4f7c50..bc35395b72 100644
+--- a/.github/workflows/sandbox.yml
++++ b/.github/workflows/sandbox.yml
+@@ -62,7 +62,7 @@ jobs:
+ 
+       - uses: actions/setup-node@v6
+         with:
+-          node-version: 24
++          node-version: 24.11.1
+ 
+       - name: Install (immutable)
+         run: pnpm install --frozen-lockfile
+diff --git a/scripts/verify-md-wrap.ts b/scripts/verify-md-wrap.ts
+index 528911c2bf..0fbedd679b 100644
+--- a/scripts/verify-md-wrap.ts
++++ b/scripts/verify-md-wrap.ts
+@@ -22,8 +22,14 @@ const PATTERNS = [
+   'docs/**/*.md',
+   'packages/*/*.md',
+   'packages/*/*/*.md',
+-  'snapshots/**/system-prompt.expected.md',
+-  'packages/**/system-prompt.expected.md',
++  // Fixed-depth patterns instead of `**`: Node 24's fs.glob throws ENOTDIR
++  // when a `**`-anchored literal final segment matches a symlink (it descends
++  // into the link as a directory); Node 22 skipped that. The snapshot layout
++  // is uniformly `snapshots/<group>/<case>/…` and the fixtures live six
++  // directories under `packages/`, so the fixed depths cover every file the
++  // `**` forms matched (verified identical on both Node versions).
++  'snapshots/*/*/system-prompt.expected.md',
++  'packages/*/*/*/*/*/*/system-prompt.expected.md',
+   'AGENTS.md',
+   'packages/AGENTS.md',
+   'snapshots/AGENTS.md',

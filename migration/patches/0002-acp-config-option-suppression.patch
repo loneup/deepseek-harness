@@ -1,0 +1,94 @@
+diff --git a/packages/acp/acp/src/session.ts b/packages/acp/acp/src/session.ts
+index a4e93f1e1a..2ecee8321b 100644
+--- a/packages/acp/acp/src/session.ts
++++ b/packages/acp/acp/src/session.ts
+@@ -103,6 +103,13 @@ export class AcpSession {
+   private inflight: InflightPrompt | undefined
+   private closing: Promise<void> | undefined
+   private readonly pendingSelections = new Map<string, ModelSelection>()
++  /**
++   * Serialized config options last returned to the client. Topology updates
++   * that would re-advertise the same state are suppressed as client noise.
++   */
++  private lastAdvertisedOptions: string | undefined
++  /** Serializes option reads against topology notifications so the suppression memo is compared against settled reads. */
++  private optionsSerial: Promise<unknown> = Promise.resolve()
+ 
+   private constructor(
+     private readonly ctx: Context,
+@@ -196,7 +203,11 @@ export class AcpSession {
+    */
+   configOptions(signal?: AbortSignal): Promise<SessionConfigOption[]> {
+     this.assertActive()
+-    return this.modelControl.options(signal)
++    return this.runOptionsSerialized(async () => {
++      const options = await this.modelControl.options(signal)
++      this.lastAdvertisedOptions = JSON.stringify(options)
++      return options
++    })
+   }
+ 
+   /**
+@@ -208,27 +219,46 @@ export class AcpSession {
+    */
+   setConfig(configId: string, value: unknown, signal?: AbortSignal): Promise<SessionConfigOption[]> {
+     this.assertActive()
+-    return this.modelControl.set(configId, value, signal)
++    return this.runOptionsSerialized(async () => {
++      const options = await this.modelControl.set(configId, value, signal)
++      this.lastAdvertisedOptions = JSON.stringify(options)
++      return options
++    })
++  }
++
++  /**
++   * Run option-related work in arrival order. A topology notification that
++   * races a client-facing option read is thereby decided after that read
++   * settled, so an unchanged topology re-advertising the same options is
++   * suppressed instead of interleaving a redundant notification.
++   */
++  private runOptionsSerialized<T>(task: () => Promise<T>): Promise<T> {
++    const run = this.optionsSerial.then(task)
++    this.optionsSerial = run.then(() => undefined, () => undefined)
++    return run
+   }
+ 
+   /** Resolve topology state off-chain, then serialize its notification without blocking execution updates. */
+   topologyChanged(): void {
+     if (this.closing !== undefined) return
+-    void this.modelControl.options()
+-      .then((configOptions) => {
+-        if (this.closing !== undefined) return
+-        const previous = this.outputTail
+-        this.outputTail = previous
+-          .then(() => this.notify({
+-            sessionId: this.agent.session.id,
+-            update: { sessionUpdate: 'config_option_update', configOptions },
+-          }))
+-          /* v8 ignore start -- the bridge notifier contains transport failure. */
+-          .catch((error: unknown) => {
+-            this.ctx.logger.warn(`acp: config-option update failed: ${errorChain(error)}`)
+-          })
+-        /* v8 ignore stop */
+-      })
++    void this.runOptionsSerialized(async () => {
++      if (this.closing !== undefined) return
++      const configOptions = await this.modelControl.options()
++      const serialized = JSON.stringify(configOptions)
++      if (serialized === this.lastAdvertisedOptions) return
++      this.lastAdvertisedOptions = serialized
++      const previous = this.outputTail
++      this.outputTail = previous
++        .then(() => this.notify({
++          sessionId: this.agent.session.id,
++          update: { sessionUpdate: 'config_option_update', configOptions },
++        }))
++        /* v8 ignore start -- the bridge notifier contains transport failure. */
++        .catch((error: unknown) => {
++          this.ctx.logger.warn(`acp: config-option update failed: ${errorChain(error)}`)
++        })
++      /* v8 ignore stop */
++    })
+       /* v8 ignore start -- option discovery contains per-provider failure. */
+       .catch((error: unknown) => {
+         this.ctx.logger.warn(`acp: config-option update failed: ${errorChain(error)}`)
