@@ -1,19 +1,13 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { NexusSettingsTab } from './NexusSettingsTab.tsx'
 import { en, zh, type NexusLocaleKey } from './locales.ts'
 
-/** Settings 命名空间键（locale 字典与 slots 注册共用）。 */
 export const NS = 'settings.nexus'
 export const inject = ['slots', 'locale']
-/** 将本包的 Settings 文案键挂入 slots 的 locale 命名空间。 */
 declare module '@deepseek-ai/dsh-client-ui-slots' { interface LocaleNamespaceMap { 'settings.nexus': NexusLocaleKey } }
-/** 注册 Nexus 管理 Settings tab 的 slots 与 locale 条目。
- * @param ctx - 客户端 Cordis 上下文。
- */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-settings-nexus: dictionaries')
   const t = ctx.locale.bind(NS)

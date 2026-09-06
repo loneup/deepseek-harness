@@ -1,0 +1,28 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { NexusSettingsTab } from '../src/client/NexusSettingsTab.tsx'
+
+afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+describe('Nexus Settings tab', () => {
+  it('loads devices and exposes pairing and revoke actions', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const path = String(input)
+      if (path.endsWith('device.list')) return new Response(JSON.stringify({ ok: true, devices: [{ deviceId: 'dev_test', revokedAt: null }] }), { status: 200 })
+      if (path.endsWith('killswitch.state')) return new Response(JSON.stringify({ ok: true, engaged: false }), { status: 200 })
+      if (path.endsWith('pairing.create')) return new Response(JSON.stringify({ ok: true, pairingCode: 'code-test' }), { status: 200 })
+      if (path.endsWith('device.revoke')) return new Response(JSON.stringify({ ok: true }), { status: 200 })
+      void init
+      return new Response(JSON.stringify({ ok: false, error: 'not found' }), { status: 404 })
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const props = { t: (key: string) => key, useSessions: () => [], useWorkspaces: () => [] } as Parameters<typeof NexusSettingsTab>[0]
+    render(<NexusSettingsTab {...props} />)
+    await waitFor(() => expect(screen.getByText('dev_test')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'createCode' }))
+    await waitFor(() => expect(screen.getByText('code-test')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'revoke' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/nexus/admin/device.revoke', expect.objectContaining({ method: 'POST' })))
+  })
+})
