@@ -22,8 +22,14 @@ const PATTERNS = [
   'docs/**/*.md',
   'packages/*/*.md',
   'packages/*/*/*.md',
-  'snapshots/**/system-prompt.expected.md',
-  'packages/**/system-prompt.expected.md',
+  // Fixed-depth patterns instead of `**`: Node 24's fs.glob throws ENOTDIR
+  // when a `**`-anchored literal final segment matches a symlink (it descends
+  // into the link as a directory); Node 22 skipped that. The snapshot layout
+  // is uniformly `snapshots/<group>/<case>/…` and the fixtures live six
+  // directories under `packages/`, so the fixed depths cover every file the
+  // `**` forms matched (verified identical on both Node versions).
+  'snapshots/*/*/system-prompt.expected.md',
+  'packages/*/*/*/*/*/*/system-prompt.expected.md',
   'AGENTS.md',
   'packages/AGENTS.md',
   'snapshots/AGENTS.md',

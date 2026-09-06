@@ -174,7 +174,7 @@ jobs:
       # the Linux architectures sharing runner.os stay on separate caches.
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 24.11.1
           cache: pnpm
 
       - uses: actions/setup-python@v6.3.0
