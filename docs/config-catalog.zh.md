@@ -876,6 +876,45 @@ export interface Config {
 
 来源：[`packages/host/frontend-static/src/index.ts:30`](../packages/host/frontend-static/src/index.ts)
 
+<a id="deepseek-aidsh-host-nexus-bridge"></a>
+
+## `@deepseek-ai/dsh-host-nexus-bridge`
+
+Requires: `webServer` · `nexusDsh`
+
+```ts config-catalog
+/** Plugin configuration for the read-only Nexus device registry. */
+export interface Config {
+  /** Absolute path to Nexus `devices.json`; omitted means no device is paired. */
+  registryPath: string
+  /** Challenge lifetime in milliseconds. */
+  challengeTtlMs: number
+  /** Absolute workspace roots allowed for session creation; empty preserves unrestricted development mode. */
+  workspaceRoots: string[]
+  /** Durable kill-switch state file; empty disables persistence. */
+  killSwitchPath: string
+  /** Durable JSONL audit file; empty disables persistence. */
+  auditPath: string
+  /** Bearer token required for non-loopback administrative requests. */
+  adminToken: string
+  /** IPv4 CIDR allowlist for administrative requests (loopback is implicit). */
+  adminAllowedNetworks: string[]
+  /** Enable the Nexus policy gate on dsh's pre-execution waterfall. */
+  enforcePreExecution: boolean
+  /**
+   * Explicit environment name (`beta` or `production`); empty preserves the
+   * legacy unconfigured shape. Never inferred from the port.
+   */
+  environment: string
+  /** Release channel served by this environment; must match {@link environment}. */
+  channel: string
+  /** Released software version reported by the health self-check. */
+  release: string
+}
+```
+
+Source: [`packages/host/nexus-bridge/src/index.ts`](../packages/host/nexus-bridge/src/index.ts)
+
 <a id="deepseek-aidsh-host-webserver"></a>
 
 ## `@deepseek-ai/dsh-host-webserver`
@@ -3356,6 +3395,7 @@ export interface Config {
 - `@deepseek-ai/dsh-client-ui-settings`（[`packages/client/ui-settings/src/index.ts`](../packages/client/ui-settings/src/index.ts)）
 - `@deepseek-ai/dsh-client-ui-settings-general`（[`packages/client/ui-settings-general/src/index.ts`](../packages/client/ui-settings-general/src/index.ts)）
 - `@deepseek-ai/dsh-client-ui-settings-models`（[`packages/client/ui-settings-models/src/index.ts`](../packages/client/ui-settings-models/src/index.ts)）
+- `@deepseek-ai/dsh-client-ui-settings-nexus`（[`packages/client/ui-settings-nexus/src/index.ts`](../packages/client/ui-settings-nexus/src/index.ts)）
 - `@deepseek-ai/dsh-client-ui-settings-plugin-inventory`（[`packages/client/ui-settings-plugin-inventory/src/index.ts`](../packages/client/ui-settings-plugin-inventory/src/index.ts)）
 - `@deepseek-ai/dsh-client-ui-settings-plugins`（[`packages/client/ui-settings-plugins/src/index.ts`](../packages/client/ui-settings-plugins/src/index.ts)）
 - `@deepseek-ai/dsh-client-ui-sidebar`（[`packages/client/ui-sidebar/src/index.ts`](../packages/client/ui-sidebar/src/index.ts)）
@@ -3444,6 +3484,7 @@ export interface Config {
 - `@deepseek-ai/dsh-experimental-webworker-runtime`（[`packages/experimental/webworker-runtime/src/index.ts`](../packages/experimental/webworker-runtime/src/index.ts)）
 - `@deepseek-ai/dsh-home-paths`（[`packages/util/home-paths/src/index.ts`](../packages/util/home-paths/src/index.ts)）
 - `@deepseek-ai/dsh-hook-protocol`（[`packages/hooks/hook-protocol/src/index.ts`](../packages/hooks/hook-protocol/src/index.ts)）
+- `@deepseek-ai/dsh-host-nexus-compat`（[`packages/host/nexus-dsh-compat/src/index.ts`](../packages/host/nexus-dsh-compat/src/index.ts)）
 - `@deepseek-ai/dsh-http-proxy`（[`packages/util/http-proxy/src/index.ts`](../packages/util/http-proxy/src/index.ts)）
 - `@deepseek-ai/dsh-launch-environment`（[`packages/util/launch-environment/src/index.ts`](../packages/util/launch-environment/src/index.ts)）
 - `@deepseek-ai/dsh-llm-mock-server`（[`packages/test-support/llm-mock-server/src/index.ts`](../packages/test-support/llm-mock-server/src/index.ts)）

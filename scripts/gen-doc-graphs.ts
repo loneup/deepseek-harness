@@ -99,6 +99,15 @@ const GROUP_ORDER = [
 
 const SERVICE_ROLES: ServiceRole[] = [
   {
+    key: 'nexusDsh',
+    pkg: 'nexus-dsh-compat',
+    title: 'Nexus compatibility seam',
+    mode: 'seam',
+    implementations: ['nexus-bridge'],
+    consumers: ['nexus-bridge'],
+    note: 'The Nexus Bridge consumes Session, model, history, and Subagent capabilities through the stable NexusDshPort; dsh adapters own every host-specific conversion.',
+  },
+  {
     key: 'attachments',
     pkg: 'attachment',
     title: 'Durable binary attachment storage',

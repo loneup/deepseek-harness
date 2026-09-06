@@ -1330,6 +1330,78 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'nexusDsh',
+    summary: 'Session, model, history, and Subagent capabilities the Nexus Bridge consumes.',
+    description: 'Session, model, history, and Subagent capabilities the Nexus Bridge consumes.',
+    methods: [
+      {
+        signature: 'readonly adapterId?: string',
+        description: 'Diagnostics identity of the bound adapter (e.g. `dsh-013`); absent means unbranded.',
+        parameters: [],
+      },
+      {
+        signature: 'listSessions(request: NexusSessionListRequest, signal?: AbortSignal): Promise<NexusSessionListValue>',
+        description: 'List known Sessions, newest activity first.',
+        parameters: [{ name: 'request', description: 'optional continuation cursor from a previous page.' }, { name: 'signal', description: 'caller-owned cancellation.' }],
+        returns: 'the list page.',
+      },
+      {
+        signature: 'createSession(request: NexusCreateSessionRequest): Promise<NexusCreateSessionValue>',
+        description: 'Create (or adopt by explicit id) one Session.',
+        parameters: [{ name: 'request', description: 'workspace and optional preset of the new Session.' }],
+        returns: 'the created Session identity.',
+      },
+      {
+        signature: 'getModelCatalog(): Promise<NexusModelCatalog>',
+        description: 'Read the host model catalog: routable provider groups, per-model reasoning metadata, load failures, and the default selection used by unconfigured Sessions.',
+        parameters: [],
+        returns: 'the catalog snapshot.',
+      },
+      {
+        signature: 'selectModel(request: NexusSelectModelRequest): Promise<NexusSelectModelValue>',
+        description: 'Select the model for subsequent prompts of one Session.',
+        parameters: [{ name: 'request', description: 'session and model route to select.' }],
+        returns: 'the host-resolved selection.',
+      },
+      {
+        signature: 'prompt(request: NexusPromptRequest, signal?: AbortSignal): Promise<NexusPromptValue>',
+        description: 'Deliver one human prompt to a Session inbox.',
+        parameters: [{ name: 'request', description: 'client-minted request identity, address, mode, and content.' }, { name: 'signal', description: 'cancellation owning the call until inbox acceptance.' }],
+        returns: 'the acceptance receipt.',
+      },
+      {
+        signature: 'cancelSession(sessionId: NexusSessionId): Promise<NexusCancelValue>',
+        description: 'Cancel the active turn of one Session.',
+        parameters: [{ name: 'sessionId', description: 'session whose live agent is cancelled.' }],
+        returns: 'the acceptance receipt.',
+      },
+      {
+        signature: 'readHistory(request: NexusHistoryRequest, signal?: AbortSignal): Promise<NexusHistoryPage>',
+        description: 'Read one backwards page of a Session or Subagent journal.',
+        parameters: [{ name: 'request', description: 'durable address and pagination window.' }, { name: 'signal', description: 'caller-owned cancellation.' }],
+        returns: 'the page with its inclusive log cursor.',
+      },
+      {
+        signature: 'listSubagents(parentSessionId: NexusSessionId, signal?: AbortSignal): Promise<NexusSubagentCatalog>',
+        description: 'List the direct subagent children of one parent.',
+        parameters: [{ name: 'parentSessionId', description: 'parent whose children are listed.' }, { name: 'signal', description: 'caller-owned cancellation.' }],
+        returns: 'the catalog with the parent availability hint.',
+      },
+      {
+        signature: 'promptSubagent(request: NexusSubagentPromptRequest, signal?: AbortSignal): Promise<NexusSubagentPromptReceipt>',
+        description: 'Deliver one human prompt to a continuable subagent child.',
+        parameters: [{ name: 'request', description: 'client-minted identity, parent/child address, and content.' }, { name: 'signal', description: 'cancellation owning the call until inbox acceptance.' }],
+        returns: 'the acceptance receipt.',
+      },
+      {
+        signature: 'interruptSubagent(request: NexusSubagentInterruptRequest): Promise<NexusSubagentInterruptReceipt>',
+        description: 'Interrupt the live subagent child addressed by one parent.',
+        parameters: [{ name: 'request', description: 'parent/child address to interrupt.' }],
+        returns: 'the acceptance receipt.',
+      },
+    ],
+  },
+  {
     key: 'permissionPresets',
     summary: 'Owns the deployment\'s permission presets and their write path.',
     description: 'Owns the deployment\'s permission presets and their write path. Requires a confining `ctx.shell` executor and `ctx.approval`; unmatched knob values are reported as CUSTOM_PRESET, not an error.',
@@ -4628,6 +4700,142 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ModelReasoningEffort',
     declaration: 'export interface ModelReasoningEffort {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n}',
+  },
+  {
+    name: 'NexusCancelValue',
+    declaration: 'export interface NexusCancelValue {\n    readonly accepted: true;\n}',
+  },
+  {
+    name: 'NexusCreateSessionRequest',
+    declaration: 'export interface NexusCreateSessionRequest {\n    readonly cwd: string;\n    readonly sessionId?: NexusSessionId;\n    readonly agentPreset?: string;\n}',
+  },
+  {
+    name: 'NexusCreateSessionValue',
+    declaration: 'export interface NexusCreateSessionValue {\n    readonly sessionId: NexusSessionId;\n    readonly agentPreset?: string;\n}',
+  },
+  {
+    name: 'NexusHistoryAddress',
+    declaration: 'export type NexusHistoryAddress = {\n    readonly kind: \'session\';\n    readonly sessionId: NexusSessionId;\n} | {\n    readonly kind: \'subagent\';\n    readonly parentSessionId: NexusSessionId;\n    readonly childSessionId: NexusSessionId;\n    readonly mode: NexusSubagentMode;\n};',
+  },
+  {
+    name: 'NexusHistoryPage',
+    declaration: 'export interface NexusHistoryPage {\n    readonly records: readonly NexusHistoryRecord[];\n    readonly hasMore: boolean;\n    readonly cursor: number;\n}',
+  },
+  {
+    name: 'NexusHistoryRecord',
+    declaration: 'export type NexusHistoryRecord = {\n    readonly type: \'event\';\n    readonly event: NexusJournalEvent;\n};',
+  },
+  {
+    name: 'NexusHistoryRequest',
+    declaration: 'export interface NexusHistoryRequest {\n    readonly address: NexusHistoryAddress;\n    readonly beforeSeq?: number;\n    readonly maxMessages?: number;\n}',
+  },
+  {
+    name: 'NexusImageMediaType',
+    declaration: 'export type NexusImageMediaType = \'image/png\' | \'image/jpeg\' | \'image/webp\' | \'image/gif\';',
+  },
+  {
+    name: 'NexusJournalEvent',
+    declaration: 'export interface NexusJournalEvent {\n    readonly type: string;\n    readonly seq: number;\n    readonly time: number;\n    readonly data: NexusJsonValue;\n    readonly ignorable?: true;\n}',
+  },
+  {
+    name: 'NexusJsonValue',
+    declaration: 'export type NexusJsonValue = string | number | boolean | null | readonly NexusJsonValue[] | {\n    readonly [key: string]: NexusJsonValue;\n};',
+  },
+  {
+    name: 'NexusModelCatalog',
+    declaration: 'export interface NexusModelCatalog {\n    readonly default: {\n        readonly provider: string;\n        readonly model: string;\n        readonly reasoningEffort?: string;\n    };\n    readonly routableProviders: readonly string[];\n    readonly groups: readonly NexusModelProviderGroup[];\n    readonly failures: readonly NexusModelCatalogFailure[];\n}',
+  },
+  {
+    name: 'NexusModelCatalogFailure',
+    declaration: 'export interface NexusModelCatalogFailure {\n    readonly id: string;\n    readonly name: string;\n    readonly message: string;\n}',
+  },
+  {
+    name: 'NexusModelCatalogModel',
+    declaration: 'export interface NexusModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly reasoning?: NexusModelReasoning;\n}',
+  },
+  {
+    name: 'NexusModelProviderGroup',
+    declaration: 'export interface NexusModelProviderGroup {\n    readonly id: string;\n    readonly name: string;\n    readonly models: readonly NexusModelCatalogModel[];\n}',
+  },
+  {
+    name: 'NexusModelReasoning',
+    declaration: 'export interface NexusModelReasoning {\n    readonly efforts: readonly NexusModelReasoningEffort[];\n    readonly defaultEffort?: string;\n}',
+  },
+  {
+    name: 'NexusModelReasoningEffort',
+    declaration: 'export interface NexusModelReasoningEffort {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n}',
+  },
+  {
+    name: 'NexusPromptContentPart',
+    declaration: 'export type NexusPromptContentPart = {\n    readonly type: \'text\';\n    readonly text: string;\n} | {\n    readonly type: \'image\';\n    readonly mediaType: NexusImageMediaType;\n    readonly data: string;\n    readonly name?: string;\n};',
+  },
+  {
+    name: 'NexusPromptMode',
+    declaration: 'export type NexusPromptMode = \'queue\' | \'steer\';',
+  },
+  {
+    name: 'NexusPromptRequest',
+    declaration: 'export interface NexusPromptRequest {\n    readonly requestId: NexusRequestId;\n    readonly sessionId: NexusSessionId;\n    readonly mode: NexusPromptMode;\n    readonly content: readonly NexusPromptContentPart[];\n}',
+  },
+  {
+    name: 'NexusPromptValue',
+    declaration: 'export interface NexusPromptValue {\n    readonly accepted: true;\n}',
+  },
+  {
+    name: 'NexusRequestId',
+    declaration: 'export type NexusRequestId = Branded<\'nexus-request-id\'>;',
+  },
+  {
+    name: 'NexusSelectModelRequest',
+    declaration: 'export interface NexusSelectModelRequest {\n    readonly sessionId: NexusSessionId;\n    readonly provider: string;\n    readonly model: string;\n    readonly reasoningEffort?: string;\n}',
+  },
+  {
+    name: 'NexusSelectModelValue',
+    declaration: 'export interface NexusSelectModelValue {\n    readonly selected: {\n        readonly provider: string;\n        readonly model: string;\n        readonly reasoningEffort?: string;\n    };\n}',
+  },
+  {
+    name: 'NexusSessionId',
+    declaration: 'export type NexusSessionId = Branded<\'nexus-session-id\'>;',
+  },
+  {
+    name: 'NexusSessionListRequest',
+    declaration: 'export interface NexusSessionListRequest {\n    readonly cursor?: string;\n}',
+  },
+  {
+    name: 'NexusSessionListValue',
+    declaration: 'export interface NexusSessionListValue {\n    readonly items: readonly NexusSessionSummary[];\n}',
+  },
+  {
+    name: 'NexusSessionSummary',
+    declaration: 'export interface NexusSessionSummary {\n    readonly sessionId: NexusSessionId;\n    readonly updatedAt: number;\n    readonly running: boolean;\n    readonly blank: boolean;\n    readonly parentSessionId?: NexusSessionId;\n    readonly origin?: \'subagent\';\n    readonly cwd?: string;\n    readonly projections?: NexusJsonValue;\n}',
+  },
+  {
+    name: 'NexusSubagentCatalog',
+    declaration: 'export interface NexusSubagentCatalog {\n    readonly parentAvailable: boolean;\n    readonly entries: readonly NexusSubagentEntry[];\n}',
+  },
+  {
+    name: 'NexusSubagentEntry',
+    declaration: 'export type NexusSubagentEntry = {\n    readonly kind: \'child\';\n    readonly id: NexusSessionId;\n    readonly activity: \'running\' | \'inactive\';\n    readonly hasChildren: boolean;\n} & ({\n    readonly mode: \'one-shot\';\n    readonly label?: string;\n} | {\n    readonly mode: \'continuable\';\n    readonly label: string;\n}) | {\n    readonly kind: \'diagnostic\';\n    readonly id: NexusSessionId;\n    readonly reason: \'corrupt\' | \'unsupported\' | \'unavailable\';\n};',
+  },
+  {
+    name: 'NexusSubagentInterruptReceipt',
+    declaration: 'export interface NexusSubagentInterruptReceipt {\n    readonly accepted: true;\n}',
+  },
+  {
+    name: 'NexusSubagentInterruptRequest',
+    declaration: 'export interface NexusSubagentInterruptRequest {\n    readonly parentSessionId: NexusSessionId;\n    readonly childSessionId: NexusSessionId;\n    readonly mode: \'continuable\';\n}',
+  },
+  {
+    name: 'NexusSubagentMode',
+    declaration: 'export type NexusSubagentMode = \'continuable\' | \'one-shot\';',
+  },
+  {
+    name: 'NexusSubagentPromptReceipt',
+    declaration: 'export interface NexusSubagentPromptReceipt {\n    readonly accepted: true;\n    readonly messageId: string;\n}',
+  },
+  {
+    name: 'NexusSubagentPromptRequest',
+    declaration: 'export interface NexusSubagentPromptRequest {\n    readonly requestId: NexusRequestId;\n    readonly parentSessionId: NexusSessionId;\n    readonly childSessionId: NexusSessionId;\n    readonly mode: \'continuable\';\n    readonly content: readonly NexusPromptContentPart[];\n}',
   },
   {
     name: 'ObjectJsonSchema',

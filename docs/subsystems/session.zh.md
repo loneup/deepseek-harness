@@ -677,6 +677,92 @@ interface TurnEndReasonMap {
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxnexusdsh--nexusdshport"></a>
+
+### `ctx.nexusDsh` — `NexusDshPort`
+
+Session, model, history, and Subagent capabilities the Nexus Bridge consumes.
+
+```ts cordis-catalog
+/**
+ * List known Sessions, newest activity first.
+ * @param request - optional continuation cursor from a previous page.
+ * @param signal - caller-owned cancellation.
+ * @returns the list page.
+ */
+listSessions(request: NexusSessionListRequest, signal?: AbortSignal): Promise<NexusSessionListValue>
+
+/**
+ * Create (or adopt by explicit id) one Session.
+ * @param request - workspace and optional preset of the new Session.
+ * @returns the created Session identity.
+ */
+createSession(request: NexusCreateSessionRequest): Promise<NexusCreateSessionValue>
+
+/**
+ * Read the host model catalog: routable provider groups, per-model reasoning
+ * metadata, load failures, and the default selection used by unconfigured
+ * Sessions.
+ * @returns the catalog snapshot.
+ */
+getModelCatalog(): Promise<NexusModelCatalog>
+
+/**
+ * Select the model for subsequent prompts of one Session.
+ * @param request - session and model route to select.
+ * @returns the host-resolved selection.
+ */
+selectModel(request: NexusSelectModelRequest): Promise<NexusSelectModelValue>
+
+/**
+ * Deliver one human prompt to a Session inbox.
+ * @param request - client-minted request identity, address, mode, and content.
+ * @param signal - cancellation owning the call until inbox acceptance.
+ * @returns the acceptance receipt.
+ */
+prompt(request: NexusPromptRequest, signal?: AbortSignal): Promise<NexusPromptValue>
+
+/**
+ * Cancel the active turn of one Session.
+ * @param sessionId - session whose live agent is cancelled.
+ * @returns the acceptance receipt.
+ */
+cancelSession(sessionId: NexusSessionId): Promise<NexusCancelValue>
+
+/**
+ * Read one backwards page of a Session or Subagent journal.
+ * @param request - durable address and pagination window.
+ * @param signal - caller-owned cancellation.
+ * @returns the page with its inclusive log cursor.
+ */
+readHistory(request: NexusHistoryRequest, signal?: AbortSignal): Promise<NexusHistoryPage>
+
+/**
+ * List the direct subagent children of one parent.
+ * @param parentSessionId - parent whose children are listed.
+ * @param signal - caller-owned cancellation.
+ * @returns the catalog with the parent availability hint.
+ */
+listSubagents(parentSessionId: NexusSessionId, signal?: AbortSignal): Promise<NexusSubagentCatalog>
+
+/**
+ * Deliver one human prompt to a continuable subagent child.
+ * @param request - client-minted identity, parent/child address, and content.
+ * @param signal - cancellation owning the call until inbox acceptance.
+ * @returns the acceptance receipt.
+ */
+promptSubagent(request: NexusSubagentPromptRequest, signal?: AbortSignal): Promise<NexusSubagentPromptReceipt>
+
+/**
+ * Interrupt the live subagent child addressed by one parent.
+ * @param request - parent/child address to interrupt.
+ * @returns the acceptance receipt.
+ */
+interruptSubagent(request: NexusSubagentInterruptRequest): Promise<NexusSubagentInterruptReceipt>
+```
+
+Source: [`packages/host/nexus-dsh-compat/src/port.ts`](../../packages/host/nexus-dsh-compat/src/port.ts)
+
 <a id="ctxsessioncontroller--sessioncontroller"></a>
 
 ### `ctx.sessionController` — `SessionController`
