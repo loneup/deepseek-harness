@@ -57,3 +57,17 @@
 5. 上游升级优先新增 `DshXXXAdapter`（Beta 先行），`NexusDshPort` 契约测试不变。
 6. iOS 侧用独立 Scheme/Bundle ID/Keychain/UserDefaults 隔离双环境（已实施，S7）。
 7. **运行态约束（2026-09-06 固化）**：3000 = Production 保持运行，任何后续操作不得停止/重启/改配置/占用该端口，只允许只读检查；3088 = Beta 是唯一可自由启停验证的环境。开发与测试一律使用 `web:beta`；iOS 双环境工作只针对 Nexus-Beta / 3088 / beta manifest / `~/.dsh/nexus-beta`。
+
+## D8 · 不向上游开 PR：fork 内维护二开（2026-09-07）
+
+**决策**：Nexus 迁移与二开修复（F1 agent-loop loader 安定门 / F2 ACP 冗余通知抑制 / F3 Node 24.11.1 钉点 + md-wrap glob 适配）在 fork `loneup/deepseek-harness` 的 `master` 上维护，**不向 `deepseek-ai/deepseek-harness` 开 PR**（用户 2026-09-07 拍板）。
+
+**原因**：
+1. 无上游写权限：本地两个身份（git HTTPS 凭证 loneup / gh CLI incvi）对上游均为 403 / `push:false`；且 OAuth token 缺 `workflow` scope，含 workflow 文件的推送走 HTTPS 会被拒，推送只能走 SSH（fork 属主）。
+2. F1/F2/F3 已在 fork 内通过完整门禁（全量单测 / e2e / web:built / ci:static / 真机前链路验收）并带确定性回归测试，fork 内可自持。
+3. 开 PR 意味着维护节奏受上游评审支配；当前阶段（迁移收尾）优先稳定自持。
+
+**规则**：
+1. 上游同步用 `git pull origin master`（merge/rebase），冲突时按 `migration/fork-modifications-2026-09-06.md` 的撤销条件逐项检查上游是否已含等效修复——已含则退二开（`git apply --reverse` 或手动移除）。
+2. 二开补丁集（`migration/patches/`）作为第二层保险保留：commit 为第一层（已入库），工作树被硬还原时补丁恢复。
+3. 若未来改变决策开 PR：从 fork master 直接开，F1/F2 附回归测试（`loader-composition.spec.ts` 已就绪）。

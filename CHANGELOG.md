@@ -146,3 +146,11 @@
 - **master 已推到 `loneup/deepseek-harness`**（fast-forward `47f943859b..c7eec33b8d`，SSH 通道，fork remote = `git@github.com:loneup/deepseek-harness.git`）：12 个会话 commit + 上游同步（fork 此前落后 2930 commit）。
 - **推送通道事实（后续会话必读）**：上游 `deepseek-ai/deepseek-harness`（origin）对本地两个身份均无写权限——git HTTPS 凭证（loneup，403 denied）与 gh CLI（incvi，push:false）；且 loneup 的 OAuth token 缺 `workflow` scope，含 workflow 文件的推送走 HTTPS 会被拒（remote rejected），**必须走 SSH**（SSH key 属 loneup，对 fork 有属主权限）。pre-push typecheck hook 在 node 24 下通过（6.4s）。
 - 后续可选：从 fork 向上游开 PR（人工决策）。
+
+### 收尾清单执行（2026-09-07 第九轮，push 后用户指令）
+
+- **不开上游 PR（DECISIONS D8）**：迁移与二开（F1/F2/F3）在 fork `loneup/deepseek-harness` master 自持维护；上游同步走 pull + fork 清单撤销条件检查。依据：无上游写权限（两身份 403/push:false，workflow-scope 限 SSH）、fork 内门禁全绿自持、维护节奏自主。
+- **Python PATH 永久修复落地**：`~/.zshrc` 顶部（nvm/fnm 之前）`eval "$(/opt/homebrew/bin/brew shellenv)"`——根因是 .zshrc 从未加 brew shellenv，`/opt/homebrew/bin` 沉在 PATH 末尾。新交互 shell 实测 `python3` → homebrew 3.14.7，node/pnpm 解析无回归（版本管理器仍优先）；备份 `~/.zshrc.backup-before-brew-2026-09-07`。code-runtime-python 的 244 项失败自此在新会话中不再需要外科 PATH。
+- **真机 Golden Path 就绪**：新增 tailnet 转发器 `migration/tools/nexus-beta-forwarder.mjs`（只绑 Tailscale IP `100.107.98.34:3088` → loopback 3088，SSE 流式双向转发，tailnet 外不可达）；**27/27 全链路验收经转发器路径通过**；iOS Beta target 真机地址本就指向该 IP（ATS 白名单已含，无需改 App）；执行手册 `migration/golden-path-runbook-2026-09-07.md`（配对/会话/turn/审批双 UI 抢答/断线恢复五阶段 + 证据要求）。tailscale serve 从陈旧 3080 改指 3088（HTTPS 备选通道）。待人工：iPhone Tailscale 上线后按手册执行。
+- **36 项用户既有内容分栈**：建 `nexus-user-wip` 分支三主题入库（设置 tab 恢复 19 文件 / 默认端口 3000 ×4 / 历史工件 ×13），master 保持纯迁移历史，本地工作树停在 nexus-user-wip，两分支均推 fork。已知结构性事实：master 单独不可自举（web-app 依赖 ui-settings-nexus 包主体在分支上），干净检出需先合并该分支——第八轮拆分既定结果，详见 HANDOFF 第九轮节。
+- fork CI 检查按用户指示跳过。

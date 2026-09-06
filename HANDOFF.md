@@ -1,6 +1,6 @@
 # HANDOFF · 当前交接状态
 
-更新时间：2026-09-07（Nexus 兼容层迁移会话，第八轮完成：commit 拆分 + 复核修正 + 已 push 到 fork）
+更新时间：2026-09-07（Nexus 兼容层迁移会话，第九轮：收尾清单执行——不开 PR 决策 / Python PATH 永久修复 / Golden Path 就绪 / 用户内容分栈）
 
 ## 冻结信息（Stage freeze）
 
@@ -26,10 +26,10 @@
 | S7 Subagent | ✅ 完成 | subagent.spec + subagent-command.spec + 真实链路 5 项 |
 | S8 Web built | ⚠️ 条件完成 → gate 已绿 | ① 迁移验收层——Nexus 相关测试全绿（compat 62 + bridge **76** + web-app 24）+ 真实链路 27/27 ×3 runs；② 仓库整体门禁层——queue-actions 限定 retry 后**全量 `test:web:built` exit 0（317/332 通过、0 失败，2026-09-05 完整重跑）** |
 | S9 iOS 回归 | ✅ 模拟器层完成（npm test 278/278；swift test 96/96；xcodebuild BUILD SUCCEEDED；未改 iOS 代码） |
-| S9b 真机 Golden Path | ❌ 待执行（人工） | 配对 → 会话 → turn → 审批双 UI 应答 → 断线恢复 |
+| S9b 真机 Golden Path | ⏳ 就绪待人工执行 | 配对 → 会话 → turn → 审批双 UI 应答 → 断线恢复；连通性已就绪（tailnet 转发器 27/27 验收通过），执行手册 `migration/golden-path-runbook-2026-09-07.md` |
 | S10 版本兼容矩阵 | ⚠️ 设计完成（DECISIONS D5） | dsh 0.1.3→Dsh013Adapter→Port v1 已实测；0.1.4 适配器为设计预留，尚未实测 |
 
-**整体完成度：约 95%。剩余实际未完成项：① 真机 Golden Path 验收（人工，S9b）；② Python PATH 永久修复（E.2，`.zshrc` 前置 homebrew 或仓库级 Python 钉版）；③ 回滚演练 / 正式发布准备（0.1.4 发布时 production 切 stable 渠道、manifests 随发布再生成）。~~审批 settle 单测重建、三个 .disabled 套件重写~~已随第二轮完成（approvals.spec 8 项 + approvals-live 2 项 + nexus-bridge/admin/mapping 三套件转正，见 KNOWN_ISSUES #7）。**
+**整体完成度：约 97%。剩余实际未完成项：① 真机 Golden Path 验收（连通性与手册就绪，待人持机执行，S9b）；② 回滚演练 / 正式发布准备（0.1.4 发布时 production 切 stable 渠道、manifests 随发布再生成）。~~Python PATH 永久修复~~已于第九轮落地（`.zshrc` brew shellenv，见 KNOWN_ISSUES #10 修正记录）。~~审批 settle 单测重建、三个 .disabled 套件重写~~已随第二轮完成（approvals.spec 8 项 + approvals-live 2 项 + nexus-bridge/admin/mapping 三套件转正，见 KNOWN_ISSUES #7）。**
 
 ## 跳过测试审计（test:web:built 的 15 个跳过项）
 
@@ -83,10 +83,11 @@
 
 **复跑命令备忘**（Python 门禁）：
 ```sh
-# 外科 PATH：只前置 python3，不影响 node 解析
+# 永久修复已落地（2026-09-07）：~/.zshrc 顶部（nvm/fnm 之前）eval "$(/opt/homebrew/bin/brew shellenv)"
+# 新交互 shell：python3 → /opt/homebrew/bin/python3 (3.14.7)，node/pnpm 无回归；备份 ~/.zshrc.backup-before-brew-2026-09-07
+# 新会话直接 pnpm run test 即可；已运行会话（不回溯）仍用下面的外科 PATH：
 mkdir -p /tmp/py314-bin && ln -sf /opt/homebrew/bin/python3 /tmp/py314-bin/python3
 PATH="/tmp/py314-bin:$PATH" pnpm run test
-# 永久修复（待人审）：把 /opt/homebrew/bin 提到 /usr/bin 之前（如 .zshrc 早段 eval brew shellenv），或引入 mise/.python-version 仓库级钉版
 ```
 
 ## 双环境治理计划（S0–S12，依据 2026-09-06 环境隔离与发布渠道方案）
@@ -245,11 +246,29 @@ PATH="/tmp/py314-bin:$PATH" pnpm run test
 
 ## 下一步
 
-1. **commit 已 push 到 fork（2026-09-07，人审授权）**：12 个 commit（10 迁移 + 1 拆分记录 + 1 复核修正）随 master fast-forward 推到 `loneup/deepseek-harness`（`47f943859b..c7eec33b8d`，SSH 通道；上游 403 与 workflow-scope 细节见冻结信息行）。后续可选项：从 fork 向上游 `deepseek-ai/deepseek-harness` 开 PR（人工决策）。剩余待办：工作树 36 项用户既有内容由用户单独处置（建议：ui-settings-nexus 包 + slot-catalog + tsconfig.client.json 作为一个 `feat` commit；bridge 旧 `.disabled/.backup/.stub` ×7 确认无用后删除；处置后同样经 fork 推送）。
-2. **Python PATH 永久修复（人审决策）**：把 `/opt/homebrew/bin` 提前（`.zshrc` 早段 `eval "$(/opt/homebrew/bin/brew shellenv)"`）或引入仓库级 Python 版本管理。
-3. 真机 Golden Path 验收（配对 → 会话 → turn → 审批应答 → 断线恢复）——需要真机，属于人工验收；协议层已由单测与真实链路验收覆盖。
-4. Agent Note 从 proposed 转正由人裁决。
-5. （可选）设 `DEEPSEEK_API_KEY` 补跑 B/C 级 record 半区 e2e；安装 pwsh 补跑平台项。
+1. **真机 Golden Path（唯一待人工执行项）**：连通性就绪（tailnet 转发器 `http://100.107.98.34:3088`，27/27 验收经该路径复跑通过；iOS Beta target 已指向该地址），执行手册 `migration/golden-path-runbook-2026-09-07.md`。硬前置：iPhone Tailscale 上线（当前离线 39 天）。
+2. **回滚演练 / 正式发布准备**（0.1.4 发布时）：production 切 stable 渠道、manifests 随发布再生成、3000 维护窗口用 node 24.11.1 重启。
+3. Agent Note 从 proposed 转正由人裁决；（可选）设 `DEEPSEEK_API_KEY` 补跑 B/C 级 record 半区 e2e、安装 pwsh 补跑平台项。
+4. 上游同步（未来）：`git pull origin master`，按 `migration/fork-modifications-2026-09-06.md` 撤销条件逐项检查（DECISIONS D8：不开 PR）。
+
+## 第九轮（2026-09-07）· 收尾清单执行（push 后用户指令）
+
+> 用户收尾指令：① fork CI 检查（用户明示跳过）；② 决定不开上游 PR；③ 36 项用户内容单独处理不并入迁移分支；④ Python PATH 永久方案；⑤ 真机 Golden Path 保留并完成。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| ① fork CI | ⏭️ 跳过 | 用户明示"不需要这个" |
+| ② 不开 PR 决策 | ✅ 已记录 | `DECISIONS.md` D8（无上游写权限 403/push:false + workflow-scope 仅 SSH；fork 内门禁自持）；fork 清单四.3 同步改写 |
+| ③ 36 项用户内容分栈 | ✅ 已执行 | 见下方"用户内容分栈"小节：`nexus-user-wip` 分支三主题 commit，master 保持纯迁移历史 |
+| ④ Python PATH 永久修复 | ✅ 已落地 | `~/.zshrc` 顶部（nvm/fnm 前）`eval "$(/opt/homebrew/bin/brew shellenv)"`；新交互 shell 实测 `python3` → homebrew 3.14.7、node/pnpm 解析无回归；备份 `~/.zshrc.backup-before-brew-2026-09-07`；KNOWN_ISSUES #10 记录已更新 |
+| ⑤ Golden Path 就绪 | ✅ 准备完毕 | tailnet 转发器（`migration/tools/nexus-beta-forwarder.mjs`，只绑 100.107.98.34:3088 → 127.0.0.1:3088，SSE 流式）；**27/27 全链路验收经转发器路径通过**；iOS Beta target 真机地址本就指向 `http://100.107.98.34:3088/nexus`（ATS 白名单已含）；执行手册 `migration/golden-path-runbook-2026-09-07.md`；tailscale serve 顺带从陈旧 3080 改指 3088（HTTPS 备选）。待人工：iPhone Tailscale 上线（离线 39 天）→ 按手册执行 |
+
+### 用户内容分栈（③ 执行记录）
+
+- **动机**：36 项用户既有内容若留在 master 工作树，随时可能被误提交混入迁移历史（用户明确要求避免）；且 master 的已提交文件（web-app package.json 依赖、pnpm-lock importers、tsconfig 别名、startup.spec import）**引用了其中未入库的 ui-settings-nexus 包**——干净检出 master 单独 `pnpm install --frozen-lockfile` 会失败（结构性依赖，见下）。
+- **处置**：建 `nexus-user-wip` 分支（自 master），36 项按三主题入库：A `feat(nexus)` 设置 tab 恢复（ui-settings-nexus 包主体 19 文件 + slot-catalog + tsconfig.client + expected + verify 脚本）；B `docs(nexus)` 默认端口 3000（cli README ×3 + startup.spec 两 hunk）；C `chore(nexus)` 历史工件保全（Agent Note ×6 + bridge .disabled/.backup/.stub ×7）。**本地工作树停在 nexus-user-wip**（功能完备：master + 用户内容）；master 保持纯迁移历史；两分支均推到 fork。
+- **已知结构性事实（接手者必读）**：master 单独不可自举——web-app 已声明 `@deepseek-ai/dsh-client-ui-settings-nexus: workspace:^` 且 lockfile 含其 importer，但包主体在 nexus-user-wip 上。干净检出后需 `git merge nexus-user-wip`（或 cherry-pick 设置 tab commit）才能 install/测试。这是第八轮拆分的既定结果（用户内容不入迁移分支），非缺陷；若未来想让 master 自举，把分支 A 的 commit 合入 master 即可（人工决策）。
+- bridge 旧 `.disabled/.backup/.stub` ×7 与用户 Agent Note ×6 原样保全在分支 C；确认无用后可在 nexus-user-wip 上删除（人工决策）。
 
 ## 阻塞
 

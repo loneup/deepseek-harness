@@ -45,7 +45,7 @@ compat 包的 cordis Context 增补声明在 `src/plugin.ts`，包入口 `src/in
 ## 10. ~~全量单测车道存在两个与迁移无关的预存失败源~~（2026-09-06 第三轮更新）
 
 **已解决/定性完毕**：
-- `packages/experimental/code-runtime-python/tests/*`（244 项）——**根因修正**：不是缺 CPython，而是 PATH 顺序：`/usr/bin/python3`(3.9.6) 排在 `/opt/homebrew/bin/python3`(3.14.7) 之前（交互 shell 与会话 shell 皆然）。用外科 PATH（`ln -sf /opt/homebrew/bin/python3 /tmp/py314-bin/python3` 后前置该目录，node 仍解析 22.23.1）复跑：code-runtime-python 283/285（2 跳过）通过；全量 `pnpm run test` **18328 通过 / 1 失败 / 118 跳过**（基线 18050/245 失败）。永久修复（调整 shell PATH 顺序或仓库级 Python 钉版）待人审。
+- `packages/experimental/code-runtime-python/tests/*`（244 项）——**根因修正**：不是缺 CPython，而是 PATH 顺序：`/usr/bin/python3`(3.9.6) 排在 `/opt/homebrew/bin/python3`(3.14.7) 之前（交互 shell 与会话 shell 皆然）。用外科 PATH（`ln -sf /opt/homebrew/bin/python3 /tmp/py314-bin/python3` 后前置该目录，node 仍解析 22.23.1）复跑：code-runtime-python 283/285（2 跳过）通过；全量 `pnpm run test` **18328 通过 / 1 失败 / 118 跳过**（基线 18050/245 失败）。**永久修复已落地（2026-09-07，经用户授权）**：`~/.zshrc` 顶部（nvm/fnm 之前）加 `eval "$(/opt/homebrew/bin/brew shellenv)"`——新交互 shell 实测 `python3` → `/opt/homebrew/bin/python3`（3.14.7），node/pnpm 解析无回归（版本管理器仍优先；homebrew node 26 不遮蔽 nvm/fnm）；备份 `~/.zshrc.backup-before-brew-2026-09-07`。已运行的会话（含本会话 shell）不回溯，仍需外科 PATH 前缀。
 - `packages/spill/spill-local/tests/spill-local.spec.ts` "keeps a file exactly at the boundary"——计时敏感 flake 维持原判：本轮全量再次失败一次、隔离复跑 41/41 通过，与迁移无关（spill 包未被触碰）。
 - 注意教训：给 PATH 前缀 `/opt/homebrew/bin` 整目录会把 node 也换成 26.3.0，触发 fs-ext ABI 错误（39 文件失败）——这正是 #13 描述的故障模式；前置目录必须只含 python3。
 

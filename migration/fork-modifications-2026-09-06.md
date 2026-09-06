@@ -44,7 +44,7 @@ PATH=/tmp/py314-bin:$PATH DSH_HOME=$(mktemp -d /tmp/e2e-verify-XXXX) pnpm run te
 
 1. `git pull` 前确认本清单补丁对应文件无未提交改动丢失风险（tracked 修改遇上游同区域改动会冲突——冲突即人工合并机会，检查上游是否已含等效修复）。
 2. pull 后逐项跑撤销条件验证（F1/F2/F3 的"验证"命令）；上游已修复的项从本清单与工作树移除（`git apply --reverse` 或手动）。
-3. F1/F2 属上游 bug 修复，**建议以 PR 形式贡献回 dsh 仓库**（含回归测试）；合并后本二开自然清零。
+3. F1/F2 属上游 bug 修复，但**决定不开 PR**（DECISIONS D8，2026-09-07 用户拍板）：无上游写权限（403/push:false + workflow-scope 限制，仅 SSH 到 fork），且 fork 内门禁自持。上游同步时按各项撤销条件检查等效修复，上游已修复即退二开。若未来改变决策，从 fork master 开 PR（回归测试 `loader-composition.spec.ts` 已就绪）。
 
 ## 五、后续政策
 
