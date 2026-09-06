@@ -71,6 +71,11 @@ async function bootWeb(
     // moved into the presets that a host row still waits for. The boot audit
     // is that assertion.
     { id: 'webserver', disabled: true },
+    // The Nexus bridge routes over the shared WebServer and would wait for
+    // the bound port disabled above; its surface is covered by the bridge's
+    // own suites, so this fixture disables it with the transport rows.
+    { id: 'nexus-dsh-compat', disabled: true },
+    { id: 'nexus-bridge', disabled: true },
     // The web bundle's runtime row injects `webServer`, so it cannot
     // activate without the bound port disabled above. It owns dist serving
     // and the URL prompt line — surface glue, not anything that decides an

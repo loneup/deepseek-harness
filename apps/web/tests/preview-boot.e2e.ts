@@ -414,6 +414,11 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
     await page.getByRole('button', { name: 'Load earlier', exact: true }).click()
     await page.getByText(SHOWCASE_OLDEST, { exact: true }).waitFor({ timeout: 15_000 })
     expect(pageErrors.map(error => error.message)).toEqual([])
+    // This regex is a failure allowlist: only a line matching it fails the
+    // assertion. The bridge's "NEXUS_ENV is not set" warning is expected in
+    // the preview (the worker boots the legacy unconfigured environment) and
+    // stays exempt precisely by NOT matching — adding it here would keep the
+    // line and fail the assertion.
     expect(consoleErrors.filter(line =>
       /watchFile|failed to watch|node-addon-landlock-run\.probe|sandbox backend is usable|SANDBOX_UNAVAILABLE/i.test(line))).toEqual([])
   } catch (error) {
@@ -474,7 +479,9 @@ async function bootEmptyPreview(origin: string, browser: Browser): Promise<void>
     expect(sessionCount).toBe(0)
     expect(pageErrors.map(error => error.message)).toEqual([])
     expect(failedResponses).toEqual(['/plugins/events'])
-    expect(consoleErrors.filter(line => !line.includes('Failed to load resource: the server responded with a status of 404')))
+    expect(consoleErrors.filter(line =>
+      !line.includes('Failed to load resource: the server responded with a status of 404')
+        && !line.includes('NEXUS_ENV is not set')))
       .toEqual([])
   } catch (error) {
     await saveFailureShot(page, 'preview-boot-empty')
