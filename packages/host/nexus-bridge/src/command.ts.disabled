@@ -1,0 +1,501 @@
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Context } from '@deepseek-ai/cordis'
+import type { AuthenticatedClient } from './handshake.ts'
+import type { NexusKillSwitch } from './admin.ts'
+import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+// TODO(migration): Remove this compatibility shim after full migration to new Typert Remote API
+// This is a temporary wrapper to make old apiProxy code compile with new SessionController
+interface LegacyApiResponse<T> {
+  result: { ok: true; value: T } | { ok: false; error: any }
+}
+
+function wrapResult<T>(value: T): LegacyApiResponse<T> {
+  return { result: { ok: true, value } }
+}
+
+function wrapError(error: any): LegacyApiResponse<never> {
+  return { result: { ok: false, error } }
+}
+
+// Temporary RpcId replacement (unused but needed for compilation)
+function RpcId(id: string): string {
+  return id
+}
+
+interface CommandRequest {
+  readonly type: 'command.request'
+  readonly requestId: string
+  readonly method: string
+  readonly payload: Record<string, unknown>
+  readonly channelToken?: string
+}
+
+const MAX_REQUEST_BYTES = 8 * 1024 * 1024
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+type NexusImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+const IMAGE_MEDIA_TYPES = new Set<NexusImageMediaType>(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const execFileAsync = promisify(execFile)
+const MAX_GIT_OUTPUT = 200_000
+type NexusPromptContent =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'image'; readonly mediaType: NexusImageMediaType; readonly data: string; readonly name?: string }
+
+type WorkspaceCheck = (path: string) => Promise<{ ok: true } | { ok: false; reason: string }>
+type SessionOpenReplay = (channelToken: string, sessionId: string, events: readonly SessionEvent[]) => void
+type SessionSubscribe = (channelToken: string, sessionId: string) => void
+/** Settle a bridge-claimed approval; false when no pending entry matches. */
+type ApprovalResponder = (sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected') => boolean
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += bytes.length
+    if (size > MAX_REQUEST_BYTES) throw new Error('request too large')
+    chunks.push(bytes)
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+}
+
+function send(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json' })
+  res.end(JSON.stringify(body))
+}
+
+function error(requestId: string | null, code: string, message: string): object {
+  return { type: 'command.response', requestId, ok: false, error: { code, message } }
+}
+
+/** Minimal Nexus command adapter for the shared dsh WebServer. */
+export class NexusCommandHandler {
+  constructor(
+    private readonly ctx: Context,
+    private readonly resolveClient: (token: string) => AuthenticatedClient | undefined,
+    private readonly checkWorkspace: WorkspaceCheck = async () => ({ ok: true }),
+    private readonly killSwitch?: NexusKillSwitch,
+    private readonly replaySession: SessionOpenReplay = () => {},
+    private readonly subscribeSession: SessionSubscribe = () => {},
+    private readonly respondApproval: ApprovalResponder = () => false,
+  ) {}
+
+  // TODO(migration): Replace with direct SessionController calls
+  // This compatibility shim wraps new API to match old apiProxy interface
+  private get apiProxy() {
+    const controller = this.ctx.sessionController
+    return {
+      sessions: {
+        list: async (req: any) => {
+          try {
+            const value = await controller.list({}, new AbortController().signal)
+            return wrapResult(value)
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        history: async (req: any) => {
+          try {
+            const { sessionId, mode, beforeSeq, maxMessages } = req.payload
+            const address = { kind: 'session' as const, sessionId }
+            const value = await controller.page({
+              address,
+              throughSeq: -1,
+              beforeSeq,
+              maxMessages,
+              withProjections: mode === 'full',
+            }, new AbortController().signal)
+            return wrapResult(value)
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        models: async (req: any) => {
+          try {
+            const value = await controller.modelCatalog({}, new AbortController().signal)
+            return wrapResult(value)
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        selectModel: async (req: any) => {
+          try {
+            const { sessionId, model } = req.payload
+            await controller.selectModel({ sessionId, model })
+            return wrapResult({ ok: true })
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        prompt: async (req: any, signal: AbortSignal) => {
+          try {
+            const { sessionId, mode, content } = req.payload
+            const value = await controller.prompt({ sessionId, mode, content }, signal)
+            return wrapResult(value)
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        cancel: async (req: any) => {
+          try {
+            const { sessionId } = req.payload
+            await controller.cancel({ sessionId })
+            return wrapResult({ ok: true })
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        create: async (req: any) => {
+          try {
+            const value = await controller.create(req.payload)
+            return wrapResult(value)
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+      },
+      subagents: {
+        list: async (req: any) => {
+          try {
+            // TODO(migration): Implement subagent listing via new API
+            // For now, return empty list to make it compile
+            return wrapResult({ items: [] })
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        history: async (req: any) => {
+          try {
+            const { parentSessionId, childSessionId, mode, beforeSeq, maxMessages } = req.payload
+            const address = {
+              kind: 'subagent' as const,
+              parentSessionId,
+              childSessionId,
+              mode: mode === 'continuable' ? 'continuable' as const : 'one-shot' as const,
+            }
+            const value = await controller.page({
+              address,
+              throughSeq: -1,
+              beforeSeq,
+              maxMessages,
+              withProjections: true,
+            }, new AbortController().signal)
+            return wrapResult(value)
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        prompt: async (req: any, signal: AbortSignal) => {
+          try {
+            const { childSessionId, content } = req.payload
+            const value = await controller.prompt({ sessionId: childSessionId, mode: 'continuable', content }, signal)
+            return wrapResult(value)
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+        interrupt: async (req: any) => {
+          try {
+            const { childSessionId } = req.payload
+            await controller.cancel({ sessionId: childSessionId })
+            return wrapResult({ ok: true })
+          } catch (error) {
+            return wrapError(error)
+          }
+        },
+      },
+    }
+  }
+
+  /** Handle one POST `/nexus/command` request.
+   * @param req - Incoming HTTP request.
+   * @param res - Response writer.
+   */
+  async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') { send(res, 405, { error: 'method_not_allowed' }); return }
+    let raw: unknown
+    try { raw = await readJson(req) } catch { send(res, 400, error(null, 'malformed', 'invalid JSON')); return }
+    if (!isRecord(raw)) { send(res, 400, error(null, 'malformed', 'command must be an object')); return }
+    const requestId = typeof raw.requestId === 'string' && raw.requestId !== '' ? raw.requestId : null
+    if (raw.type !== 'command.request' || requestId === null || typeof raw.method !== 'string'
+      || !isRecord(raw.payload) || typeof raw.channelToken !== 'string') {
+      send(res, 400, error(requestId, 'malformed', 'invalid command request')); return
+    }
+    const client = this.resolveClient(raw.channelToken)
+    if (client === undefined) { send(res, 401, error(requestId, 'unknown_client', 'unknown channel token')); return }
+    const command = raw as unknown as CommandRequest
+    if (command.method === 'connection.ping') {
+      send(res, 200, { type: 'command.response', requestId, ok: true, value: { pong: true } }); return
+    }
+    if (command.method === 'workspace.gitStatus' || command.method === 'workspace.gitDiff' || command.method === 'workspace.gitBranches') {
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      if (sessionId === '') { send(res, 200, error(requestId, 'malformed', `${command.method} requires sessionId`)); return }
+      const listed = await this.sessionController.list({}, new AbortController().signal)
+      const item = listed.items.find(candidate => String(candidate.sessionId ?? '') === sessionId)
+      const cwd = item?.cwd
+      if (typeof cwd !== 'string' || cwd === '') { send(res, 200, error(requestId, 'workspace_required', 'session 工作目录未知')); return }
+      const check = await this.checkWorkspace(cwd)
+      if (!check.ok) { send(res, 200, error(requestId, 'whitelist_blocked', check.reason)); return }
+      const args = command.method === 'workspace.gitStatus'
+        ? ['--no-pager', 'status', '--short']
+        : command.method === 'workspace.gitDiff'
+          ? ['--no-pager', 'diff', '--no-ext-diff', '--unified=3', '--', '.']
+          : ['--no-pager', 'branch', '--format=%(refname:short)']
+      try {
+        const result = await execFileAsync('git', args, { cwd, timeout: 10_000, maxBuffer: MAX_GIT_OUTPUT, windowsHide: true })
+        const kind = command.method === 'workspace.gitStatus' ? 'status' : command.method === 'workspace.gitDiff' ? 'diff' : 'branches'
+        send(res, 200, { type: 'command.response', requestId, ok: true, value: { kind, cwd, output: String(result.stdout).slice(0, MAX_GIT_OUTPUT) } })
+      } catch (cause) {
+        const errorText = cause instanceof Error ? cause.message : String(cause)
+        send(res, 200, error(requestId, 'host_error', errorText.slice(0, 500)))
+      }
+      return
+    }
+    if (command.method === 'session.open') {
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      if (sessionId === '') { send(res, 200, error(requestId, 'malformed', 'session.open requires sessionId')); return }
+      try {
+        // Opening validates the session through the host history API; live
+        // events continue over the already-established SSE stream.
+        const response = await this.apiProxy.sessions.history({
+          rpcId: RpcId(requestId),
+          payload: { sessionId: sessionId as never, maxMessages: 50 },
+        })
+        if (response.result.ok) {
+          const historyEvents = response.result.value.events
+            .map(item => (isRecord(item) && isRecord(item.event) ? item.event : item))
+            .filter(isSessionEvent)
+          this.subscribeSession(command.channelToken!, sessionId)
+          this.replaySession(command.channelToken!, sessionId, historyEvents)
+          send(res, 200, { type: 'command.response', requestId, ok: true, value: {
+            sessionId,
+            ...(response.result.value.projections === undefined ? {} : { projections: response.result.value.projections }),
+          } }); return
+        }
+        send(res, 200, { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+      } catch {
+        send(res, 200, error(requestId, 'host_error', 'session.open failed')); return
+      }
+    }
+    if (command.method === 'session.models') {
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      if (sessionId === '') { send(res, 200, error(requestId, 'malformed', 'session.models requires sessionId')); return }
+      const response = await this.apiProxy.sessions.models({ rpcId: RpcId(requestId), payload: { sessionId: sessionId as never } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'session.selectModel') {
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      const provider = typeof command.payload.provider === 'string' ? command.payload.provider : ''
+      const model = typeof command.payload.model === 'string' ? command.payload.model : ''
+      const reasoningEffort = typeof command.payload.reasoningEffort === 'string' ? command.payload.reasoningEffort : undefined
+      if (sessionId === '' || provider === '' || model === '') {
+        send(res, 200, error(requestId, 'malformed', 'session.selectModel requires sessionId, provider and model')); return
+      }
+      const response = await this.apiProxy.sessions.selectModel({ rpcId: RpcId(requestId), payload: {
+        sessionId: sessionId as never, provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'session.permission') {
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      const preset = typeof command.payload.preset === 'string' ? command.payload.preset : ''
+      if (sessionId === '' || preset === '') {
+        send(res, 200, error(requestId, 'malformed', 'session.permission requires sessionId and preset')); return
+      }
+      const response = await this.apiProxy.sessions.prompt({ rpcId: RpcId(requestId), payload: {
+        sessionId: sessionId as never,
+        mode: 'queue',
+        content: [{ type: 'text', text: `/permission ${preset}` }],
+      } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'turn.start' || command.method === 'turn.queue' || command.method === 'turn.steer') {
+      if (this.killSwitch?.engaged === true) { send(res, 200, error(requestId, 'kill_switch_engaged', 'new turns are disabled')); return }
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      const parsed = parsePromptContent(command.payload.content)
+      if (!parsed.ok || sessionId === '' || !parsed.content.some(part => part.type === 'text' && part.text.trim() !== '')) {
+        send(res, 200, error(requestId, 'malformed', parsed.ok ? `${command.method} requires sessionId and content` : parsed.reason)); return
+      }
+      const mode = command.method === 'turn.steer' ? 'steer' : 'queue'
+      const response = await this.apiProxy.sessions.prompt({ rpcId: RpcId(requestId), payload: {
+        sessionId: sessionId as never, mode, content: parsed.content,
+      } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'turn.cancel') {
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      if (sessionId === '') { send(res, 200, error(requestId, 'malformed', 'turn.cancel requires sessionId')); return }
+      const response = await this.apiProxy.sessions.cancel({ rpcId: RpcId(requestId), payload: { sessionId: sessionId as never } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'subagent.list') {
+      const parentSessionId = typeof command.payload.parentSessionId === 'string' ? command.payload.parentSessionId : ''
+      if (parentSessionId === '') { send(res, 200, error(requestId, 'malformed', 'subagent.list requires parentSessionId')); return }
+      const response = await this.apiProxy.subagents.list({ rpcId: RpcId(requestId), payload: { parentSessionId: parentSessionId as never } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'subagent.history') {
+      const parentSessionId = typeof command.payload.parentSessionId === 'string' ? command.payload.parentSessionId : ''
+      const childSessionId = typeof command.payload.childSessionId === 'string' ? command.payload.childSessionId : ''
+      const mode = command.payload.mode === 'continuable' || command.payload.mode === 'one-shot' ? command.payload.mode : ''
+      const beforeSeq = command.payload.beforeSeq
+      const maxMessages = command.payload.maxMessages
+      if (parentSessionId === '' || childSessionId === '' || mode === ''
+        || (beforeSeq !== undefined && (!Number.isInteger(beforeSeq) || Number(beforeSeq) < 1))
+        || (maxMessages !== undefined && (!Number.isInteger(maxMessages) || Number(maxMessages) < 1))) {
+        send(res, 200, error(requestId, 'malformed', 'subagent.history requires parentSessionId, childSessionId, mode and valid pagination')); return
+      }
+      const response = await this.apiProxy.subagents.history({ rpcId: RpcId(requestId), payload: {
+        parentSessionId: parentSessionId as never,
+        childSessionId: childSessionId as never,
+        mode,
+        ...(beforeSeq === undefined ? {} : { beforeSeq: beforeSeq as number }),
+        ...(maxMessages === undefined ? {} : { maxMessages: maxMessages as number }),
+      } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'subagent.prompt') {
+      const parentSessionId = typeof command.payload.parentSessionId === 'string' ? command.payload.parentSessionId : ''
+      const childSessionId = typeof command.payload.childSessionId === 'string' ? command.payload.childSessionId : ''
+      const parsed = parsePromptContent(command.payload.content)
+      if (parentSessionId === '' || childSessionId === '' || command.payload.mode !== 'continuable' || !parsed.ok || !parsed.content.some(part => part.type === 'text' && part.text.trim() !== '')) {
+        send(res, 200, error(requestId, 'malformed', parsed.ok ? 'subagent.prompt requires parentSessionId, childSessionId, mode=continuable and content' : parsed.reason)); return
+      }
+      const textContent = parsed.content.filter((part): part is Extract<NexusPromptContent, { type: 'text' }> => part.type === 'text')
+        .map(part => ({ type: 'text' as const, text: part.text }))
+      const response = await this.apiProxy.subagents.prompt({ rpcId: RpcId(requestId), payload: {
+        parentSessionId: parentSessionId as never, childSessionId: childSessionId as never, mode: 'continuable', content: textContent,
+      } }, new AbortController().signal)
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'subagent.interrupt') {
+      const parentSessionId = typeof command.payload.parentSessionId === 'string' ? command.payload.parentSessionId : ''
+      const childSessionId = typeof command.payload.childSessionId === 'string' ? command.payload.childSessionId : ''
+      if (parentSessionId === '' || childSessionId === '' || command.payload.mode !== 'continuable') {
+        send(res, 200, error(requestId, 'malformed', 'subagent.interrupt requires parentSessionId, childSessionId and mode=continuable')); return
+      }
+      const response = await this.apiProxy.subagents.interrupt({ rpcId: RpcId(requestId), payload: {
+        parentSessionId: parentSessionId as never, childSessionId: childSessionId as never, mode: 'continuable',
+      } })
+      send(res, 200, response.result.ok
+        ? { type: 'command.response', requestId, ok: true, value: response.result.value }
+        : { type: 'command.response', requestId, ok: false, error: response.result.error }); return
+    }
+    if (command.method === 'approval.respond') {
+      const sessionId = typeof command.payload.sessionId === 'string' ? command.payload.sessionId : ''
+      const approvalId = typeof command.payload.approvalId === 'string' ? command.payload.approvalId : ''
+      const outcome = command.payload.outcome === 'allowed-once' || command.payload.outcome === 'rejected' ? command.payload.outcome : ''
+      if (sessionId === '' || approvalId === '' || outcome === '') { send(res, 200, error(requestId, 'malformed', 'approval.respond requires sessionId, approvalId, outcome')); return }
+      // Bridge-claimed approvals settle through the bridge registry keyed by
+      // the audit approvalId; the host mux answerer's rpcId echo cannot be
+      // produced by an HTTP command client.
+      if (!this.respondApproval(sessionId, approvalId, outcome)) {
+        send(res, 200, error(requestId, 'approval_not_pending', 'approval is not pending on this bridge (expired, cancelled, or already answered)')); return
+      }
+      send(res, 200, { type: 'command.response', requestId, ok: true }); return
+    }
+    if (command.method !== 'session.list') {
+      if (command.method === 'session.create') {
+        const cwd = typeof command.payload.cwd === 'string' ? command.payload.cwd : ''
+        if (cwd === '') { send(res, 200, error(requestId, 'workspace_required', 'session.create requires cwd')); return }
+        try {
+          const check = await this.checkWorkspace(cwd)
+          if (!check.ok) { send(res, 200, error(requestId, 'whitelist_blocked', check.reason)); return }
+          const response = await this.apiProxy.sessions.create({ rpcId: RpcId(requestId), payload: {
+            cwd,
+            ...(typeof command.payload.sessionId === 'string' ? { sessionId: command.payload.sessionId as never } : {}),
+            ...(typeof command.payload.agentPreset === 'string' ? { agentPreset: command.payload.agentPreset } : {}),
+          } })
+          const result = response?.result
+          if (result?.ok === true) {
+            send(res, 200, { type: 'command.response', requestId, ok: true, value: result.value }); return
+          }
+          if (result?.ok === false) {
+            send(res, 200, { type: 'command.response', requestId, ok: false, error: result.error }); return
+          }
+        } catch {
+          send(res, 200, error(requestId, 'host_error', 'session.create failed')); return
+        }
+        send(res, 200, error(requestId, 'host_error', 'session.create returned an invalid response')); return
+      }
+      send(res, 200, error(requestId, 'unknown_method', `unregistered method: ${command.method}`)); return
+    }
+    const response = await this.apiProxy.sessions.list({ rpcId: RpcId(requestId), payload: {
+      ...(typeof command.payload.cursor === 'string' ? { cursor: command.payload.cursor } : {}),
+    } })
+    if (response.result.ok) {
+      const value = response.result.value as Record<string, unknown>
+      const sourceItems = Array.isArray(value.items) ? value.items : []
+      const sessions = sourceItems
+        .filter(isRecord)
+        .map(item => ({
+          sessionId: typeof item.sessionId === 'string' ? item.sessionId : typeof item.id === 'string' ? item.id : undefined,
+          cwd: typeof item.cwd === 'string' ? item.cwd : undefined,
+          title: typeof item.title === 'string' ? item.title : undefined,
+          running: typeof item.running === 'boolean' ? item.running : undefined,
+        }))
+        .filter(item => item.sessionId !== undefined)
+      send(res, 200, { type: 'command.response', requestId, ok: true, value: {
+        sessions,
+        ...(typeof value.cursor === 'string' ? { cursor: value.cursor } : {}),
+        ...(typeof value.hasMore === 'boolean' ? { hasMore: value.hasMore } : {}),
+      } }); return
+    }
+    send(res, 200, { type: 'command.response', requestId, ok: false, error: response.result.error })
+  }
+}
+
+function isSessionEvent(value: unknown): value is SessionEvent {
+  return isRecord(value) && typeof value.type === 'string' && isRecord(value.data)
+}
+
+/** Parse Nexus prompt content without logging or otherwise copying image bytes. */
+function parsePromptContent(value: unknown): { ok: true; content: NexusPromptContent[] } | { ok: false; reason: string } {
+  if (typeof value === 'string') return { ok: true, content: [{ type: 'text', text: value }] }
+  if (!Array.isArray(value) || value.length === 0) return { ok: false, reason: 'turn.start content must be text or content blocks' }
+  const content: NexusPromptContent[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.type !== 'string') return { ok: false, reason: 'unsupported content block' }
+    if (item.type === 'text' && typeof item.text === 'string') {
+      content.push({ type: 'text', text: item.text })
+      continue
+    }
+    if (item.type === 'image' && typeof item.mediaType === 'string' && IMAGE_MEDIA_TYPES.has(item.mediaType as never)
+      && typeof item.data === 'string' && isCanonicalBase64(item.data)) {
+      const bytes = Buffer.byteLength(item.data, 'base64')
+      if (bytes > MAX_IMAGE_BYTES) return { ok: false, reason: 'image attachment exceeds 5 MiB limit' }
+      content.push({ type: 'image', mediaType: item.mediaType as NexusImageMediaType, data: item.data,
+        ...(typeof item.name === 'string' ? { name: item.name } : {}) })
+      continue
+    }
+    return { ok: false, reason: item.type === 'image' ? 'invalid or unsupported image attachment' : 'unsupported content block' }
+  }
+  return { ok: true, content }
+}
+
+function isCanonicalBase64(value: string): boolean {
+  if (value === '' || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false
+  return Buffer.from(value, 'base64').toString('base64') === value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}

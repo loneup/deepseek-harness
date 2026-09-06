@@ -1,0 +1,49 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { generateKeyPairSync } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Readable } from 'node:stream'
+import { describe, expect, it } from 'vitest'
+import { NexusAuditLog, NexusAdminController, NexusKillSwitch, authorizeAdmin } from '../src/admin.ts'
+import { NexusHandshake } from '../src/handshake.ts'
+
+function request(remoteAddress: string, body: unknown = {}, token = 'admin', method = 'POST'): import('node:http').IncomingMessage {
+  const req = Readable.from([JSON.stringify(body)]) as import('node:http').IncomingMessage
+  Object.assign(req, { method, headers: token === '' ? {} : { authorization: `Bearer ${token}` }, socket: { remoteAddress } })
+  return req
+}
+
+function response(): { status?: number; body?: unknown; writeHead: (status: number) => void; end: (body?: string) => void } {
+  const out: { status?: number; body?: unknown; writeHead: (status: number) => void; end: (body?: string) => void } = {
+    writeHead(status) { out.status = status },
+    end(body) { out.body = body === undefined ? undefined : JSON.parse(body) },
+  }
+  return out
+}
+
+describe('nexus administration', () => {
+  it('authorizes loopback without a configured token and gates remote sources', () => {
+    expect(authorizeAdmin(request('127.0.0.1', {}, ''), '', ['127.0.0.1/32'])).toEqual({ ok: true })
+    expect(authorizeAdmin(request('100.64.1.2', {}, ''), '', ['100.64.0.0/10'])).toMatchObject({ ok: false, code: 'admin_token_required' })
+    expect(authorizeAdmin(request('8.8.8.8'), 'admin', ['100.64.0.0/10'])).toMatchObject({ ok: false, code: 'source_not_allowed' })
+  })
+
+  it('persists kill-switch state and fails closed on corruption', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nexus-admin-')); const file = join(dir, 'kill-switch.json')
+    const stop = new NexusKillSwitch(file); await stop.load(); await stop.engage('host', 'test'); expect(stop.engaged).toBe(true)
+    const restarted = new NexusKillSwitch(file); await restarted.load(); expect(restarted.snapshot().engaged).toBe(true)
+    await writeFile(file, '{broken', 'utf8'); const corrupt = new NexusKillSwitch(file); await corrupt.load(); expect(corrupt.snapshot().engaged).toBe(true); expect(corrupt.snapshot().by).toBe('corrupt-file')
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('lists and revokes a registered device, invalidating its token', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nexus-admin-')); const registry = join(dir, 'devices.json'); const { publicKey } = generateKeyPairSync('ed25519')
+    const raw = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')
+    await writeFile(registry, JSON.stringify({ devices: [{ deviceId: 'dev_test', publicKey: raw, revokedAt: null }] }), 'utf8')
+    const handshake = new NexusHandshake(registry); await handshake.load(); const audit = new NexusAuditLog(join(dir, 'audit.jsonl')); const stop = new NexusKillSwitch();
+    const controller = new NexusAdminController(handshake, stop, audit, '', ['127.0.0.1/32'])
+    const listed = response(); await controller.handle('device.list', request('127.0.0.1', {}, '', 'GET'), listed as never); expect(listed.status).toBe(200); expect((listed.body as { devices: unknown[] }).devices).toHaveLength(1)
+    const revoked = response(); await controller.handle('device.revoke', request('127.0.0.1', { deviceId: 'dev_test' }, ''), revoked as never); expect(revoked.status).toBe(200); expect((revoked.body as { ok: boolean }).ok).toBe(true)
+    expect(handshake.listDevices()[0]?.revokedAt).toEqual(expect.any(String)); await rm(dir, { recursive: true, force: true })
+  })
+})

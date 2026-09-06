@@ -1,0 +1,35 @@
+import { describe, expect, it } from 'vitest'
+import { mapSessionEvent } from '../src/index.ts'
+
+describe('Nexus dsh event mapping', () => {
+  it('maps approval decisions to the iOS resolved vocabulary', () => {
+    expect(mapSessionEvent({
+      type: 'approval/decided',
+      data: { id: 'approval-1' as never, outcome: 'allowed-once' },
+    } as never)).toEqual({ kind: 'approval.resolved', approvalId: 'approval-1', decision: 'allow' })
+    expect(mapSessionEvent({
+      type: 'approval/decided',
+      data: { id: 'approval-2' as never, outcome: 'rejected' },
+    } as never)).toEqual({ kind: 'approval.resolved', approvalId: 'approval-2', decision: 'deny', cause: 'user_denied' })
+  })
+
+  it('maps tool and terminal events without exposing arguments or output', () => {
+    expect(mapSessionEvent({ type: 'tool/call', data: { turn: 1, step: 2, callId: 'call-1', name: 'bash', arguments: { secret: 'x' } } } as never))
+      .toEqual({ kind: 'tool.started', turn: 1, step: 2, toolCallId: 'call-1', name: 'bash' })
+    expect(mapSessionEvent({ type: 'tool/result', data: { turn: 1, step: 2, message: { source: { callId: 'call-1' } }, output: 'secret' } } as never))
+      .toEqual({ kind: 'tool.result', turn: 1, step: 2, toolCallId: 'call-1', ok: true, output: '' })
+    expect(mapSessionEvent({ type: 'tool/result', data: { turn: 1, step: 2, message: { source: { callId: 'call-denied' }, isError: true }, output: 'blocked' } } as never))
+      .toEqual({ kind: 'tool.result', turn: 1, step: 2, toolCallId: 'call-denied', ok: false, output: '' })
+  })
+
+  it('closes interrupted and disposed historical turns instead of leaving them running', () => {
+    expect(mapSessionEvent({
+      type: 'turn/end',
+      data: { turn: 3, reason: { kind: 'interrupted' } },
+    } as never)).toEqual({ kind: 'turn.cancelled', turn: 3 })
+    expect(mapSessionEvent({
+      type: 'turn/end',
+      data: { turn: 4, reason: { kind: 'disposed' } },
+    } as never)).toEqual({ kind: 'turn.cancelled', turn: 4 })
+  })
+})

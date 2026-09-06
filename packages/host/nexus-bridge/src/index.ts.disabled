@@ -1,0 +1,365 @@
+/**
+ * First Nexus Bridge composition slice for the dsh Web host.
+ *
+ * This package owns only the `/nexus/health` route until the complete Nexus
+ * protocol can be attached to dsh services without duplicating their state.
+ * @module @deepseek-ai/dsh-host-nexus-bridge
+ */
+
+import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-host-apiproxy'
+import type {} from '@deepseek-ai/dsh-user-approval'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
+import type { ToolExecution, PreToolDecision } from '@deepseek-ai/dsh-tools'
+import { realpath } from 'node:fs/promises'
+import { dirname, normalize, relative } from 'node:path'
+import { NexusHandshake } from './handshake.ts'
+import { NexusCommandHandler } from './command.ts'
+import { NexusAdminController, NexusAuditLog, NexusKillSwitch } from './admin.ts'
+import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
+import { PROTOCOL_VERSION } from './protocol.ts'
+
+/** Stable Cordis plugin name. */
+export const name = 'nexus-bridge'
+
+/** Required host service for route registration. */
+export const inject = ['webServer', 'apiProxy']
+
+/** Plugin configuration for the read-only Nexus device registry. */
+export interface Config {
+  /** Absolute path to Nexus `devices.json`; omitted means no device is paired. */
+  registryPath: string
+  /** Challenge lifetime in milliseconds. */
+  challengeTtlMs: number
+  /** Absolute workspace roots allowed for session creation; empty preserves unrestricted development mode. */
+  workspaceRoots: string[]
+  /** Durable kill-switch state file; empty disables persistence. */
+  killSwitchPath: string
+  /** Durable JSONL audit file; empty disables persistence. */
+  auditPath: string
+  /** Bearer token required for non-loopback administrative requests. */
+  adminToken: string
+  /** IPv4 CIDR allowlist for administrative requests (loopback is implicit). */
+  adminAllowedNetworks: string[]
+  /** Enable the Nexus policy gate on dsh's pre-execution waterfall. */
+  enforcePreExecution: boolean
+}
+
+/** Configuration schema. */
+export const Config: z<Config> = z.object({
+  registryPath: z.string().default(''),
+  challengeTtlMs: z.natural().default(60_000),
+  workspaceRoots: z.array(z.string()).default([]),
+  killSwitchPath: z.string().default(''),
+  auditPath: z.string().default(''),
+  adminToken: z.string().default(''),
+  adminAllowedNetworks: z.array(z.string()).default(['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10']),
+  enforcePreExecution: z.boolean().default(true),
+})
+
+async function checkWorkspacePath(path: string, roots: readonly string[]): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (roots.length === 0) return { ok: true }
+  if (path === '' || /[\u0000-\u001f\u007f]/.test(path)) return { ok: false, reason: 'invalid_workspace_path' }
+  let candidate = path
+  while (true) {
+    try {
+      const target = await realpath(candidate)
+      for (const root of roots) {
+        const rootReal = await realpath(root)
+        const rel = relative(rootReal, target)
+        if (rel === '' || (!rel.startsWith('..') && !rel.startsWith('/') && normalize(rel) !== '')) return { ok: true }
+      }
+      return { ok: false, reason: 'outside_workspace_roots' }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { ok: false, reason: 'workspace_realpath_failed' }
+      const parent = dirname(normalize(candidate))
+      if (parent === candidate) return { ok: false, reason: 'workspace_not_found' }
+      candidate = parent
+    }
+  }
+}
+
+/** Register the first shared-port Nexus route. */
+export async function apply(ctx: Context, config: Config = { registryPath: '', challengeTtlMs: 60_000, workspaceRoots: [], killSwitchPath: '', auditPath: '', adminToken: '', adminAllowedNetworks: ['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10'], enforcePreExecution: true }): Promise<void> {
+  // Loader config expressions may omit optional rows before schema defaults
+  // are materialized; keep the command adapter fail-closed without crashing
+  // the WebServer request handler.
+  const workspaceRoots = config.workspaceRoots ?? []
+  const handshake = new NexusHandshake(config.registryPath === '' ? undefined : config.registryPath, config.challengeTtlMs)
+  const killSwitch = new NexusKillSwitch(config.killSwitchPath === '' ? undefined : config.killSwitchPath)
+  const audit = new NexusAuditLog(config.auditPath === '' ? undefined : config.auditPath)
+  const streams = new Map<string, { res: import('node:http').ServerResponse; timer: ReturnType<typeof setInterval>; sessions: Set<string> }>()
+  const pendingReplay = new Map<string, string[]>()
+  const sequenceBySession = new Map<string, number>()
+  // Sessions a Nexus channel has opened at least once. Approvals for these
+  // sessions are answered by this bridge; all others delegate to the host's
+  // own answerer (the Web mux provider) so both UIs keep working.
+  const nexusSessions = new Set<string>()
+  // Bridge-owned pending approvals, keyed by the audit approvalId. Entries
+  // survive SSE disconnects so a replayed approval card stays answerable; the
+  // ask's abort signal settles them as 'cancelled'.
+  const pendingApprovals = new Map<string, { sessionId: string; settle: (outcome: ApprovalOutcome) => void }>()
+  const publishPayload = (sessionId: string, payload: Record<string, unknown>): void => {
+    const sequence = (sequenceBySession.get(sessionId) ?? 0) + 1
+    sequenceBySession.set(sessionId, sequence)
+    const envelope = { protocolVersion: PROTOCOL_VERSION, type: 'session.event', sessionId, requestId: null, sequence, timestamp: Date.now(), payload }
+    const data = `data: ${JSON.stringify(envelope)}\n\n`
+    for (const stream of streams.values()) if (stream.sessions.has(sessionId) && stream.res.writable) stream.res.write(data)
+  }
+  const publish = (sessionId: string, event: SessionEvent): void => {
+    const payload = mapSessionEvent(event)
+    if (payload === undefined) return
+    publishPayload(sessionId, payload)
+  }
+  const replaySession = (token: string, sessionId: string, events: readonly SessionEvent[]): void => {
+    const stream = streams.get(token)
+    const queued: string[] = []
+    for (const event of events) {
+      const payload = mapSessionEvent(event)
+      if (payload === undefined) continue
+      const sequence = (sequenceBySession.get(sessionId) ?? 0) + 1
+      sequenceBySession.set(sessionId, sequence)
+      const envelope = { protocolVersion: PROTOCOL_VERSION, type: 'session.event', sessionId, requestId: null, sequence, timestamp: Date.now(), payload }
+      const frame = `data: ${JSON.stringify(envelope)}\n\n`
+      if (stream === undefined) queued.push(frame)
+      else if (stream.res.writable) stream.res.write(frame)
+    }
+    if (queued.length > 0) pendingReplay.set(token, [...(pendingReplay.get(token) ?? []), ...queued])
+  }
+  const subscribeSession = (token: string, sessionId: string): void => {
+    nexusSessions.add(sessionId)
+    streams.get(token)?.sessions.add(sessionId)
+    // A freshly opened session may replay history whose sequence numbers are
+    // higher than the client's empty reducer. Emit an explicit anchor first
+    // so the client can establish a baseline and consume the replay in order.
+    // Without this control event, every reconnect of an old session is treated
+    // as a permanent sequence gap and remains stuck in "正在恢复连接".
+    const sequence = (sequenceBySession.get(sessionId) ?? 0) + 1
+    sequenceBySession.set(sessionId, sequence)
+    const envelope = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'session.event',
+      sessionId,
+      requestId: null,
+      sequence,
+      timestamp: Date.now(),
+      payload: { kind: 'session.subscribed', lastSeq: sequence },
+    }
+    const frame = `data: ${JSON.stringify(envelope)}\n\n`
+    const stream = streams.get(token)
+    if (stream?.res.writable === true) stream.res.write(frame)
+    else pendingReplay.set(token, [...(pendingReplay.get(token) ?? []), frame])
+  }
+  // Settle a bridge-claimed approval. Returns false when no pending entry
+  // matches (unknown id, wrong session, or already settled) so the client can
+  // surface a stale-card error instead of waiting forever.
+  const respondApproval = (sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): boolean => {
+    const entry = pendingApprovals.get(approvalId)
+    if (entry === undefined || entry.sessionId !== sessionId) return false
+    entry.settle(outcome)
+    return true
+  }
+  const commands = new NexusCommandHandler(ctx.apiProxy, token => handshake.getClient(token), path => checkWorkspacePath(path, workspaceRoots), killSwitch, replaySession, subscribeSession, respondApproval)
+  ctx.on('session/event', (session, event) => publish(session.id, event))
+  if (config.enforcePreExecution !== false) {
+    ctx.on('tools/pre-execute', async (exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision> => {
+      const session = exec.agent?.session
+      if (session === undefined) return next()
+      let preset: string | undefined
+      for (let index = session.events.length - 1; index >= 0; index -= 1) {
+        const event = session.events[index] as SessionEvent
+        if ((event as { type: string }).type !== 'permission/preset') continue
+        const raw = event as unknown as { data?: Record<string, unknown> }
+        const value = raw.data?.preset ?? raw.data?.permissionPreset ?? raw.data?.value
+        if (typeof value === 'string') { preset = value; break }
+      }
+      if (preset !== 'read-only' && preset !== 'workspace-write') return next()
+      const tool = exec.name.toLowerCase()
+      const args = exec.arguments
+      const directWrite = ['write', 'edit', 'notebookedit'].includes(tool)
+      const command = typeof args === 'string' ? args : (typeof args === 'object' && args !== null && 'command' in args && typeof args.command === 'string' ? args.command : '')
+      const shellWrite = (tool === 'bash' || tool === 'shell') && /(?:>|>>|\b(?:rm|mv|cp|mkdir|rmdir|touch|tee|chmod|chown|ln)\b)/i.test(command)
+      if (!directWrite && !shellWrite) return next()
+      if (preset === 'read-only') {
+        const reason = 'This session is read-only (permissionPreset: read-only). Write operations are not allowed.'
+        audit.emit('tool.blocked', { sessionId: session.id, tool: exec.name, reason: 'read_only' }, 'denied')
+        return { kind: 'deny', reason }
+      }
+      const objectArgs = typeof args === 'object' && args !== null ? args as Record<string, unknown> : undefined
+      // dsh's bash/fs tools own the one-shot escalation flow: they validate
+      // `sandbox_permissions` + `justification`, ask the approval service, and
+      // retry under the approved mode before executing. Nexus must not deny
+      // that request at its outer observer, otherwise an explicit user
+      // approval can never reach the real sandbox provider.
+      const requestedSandboxMode = objectArgs?.sandbox_permissions
+      const hasEscalationRequest = typeof requestedSandboxMode === 'string'
+        && typeof objectArgs?.justification === 'string'
+        && objectArgs.justification.trim() !== ''
+      if (hasEscalationRequest) return next()
+      const candidate = objectArgs !== undefined
+        ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path'].map(key => typeof objectArgs[key] === 'string' ? objectArgs[key] : undefined).find(Boolean)
+        : (/>>?\s*([^\s;&|<>]+)/.exec(command)?.[1])
+      if (candidate === undefined || (workspaceRoots.length > 0 && !(await checkWorkspacePath(candidate, workspaceRoots)).ok)) {
+        const reason = 'Path outside workspace boundaries (permissionPreset: workspace-write). The write target could not be determined.'
+        audit.emit('tool.blocked', { sessionId: session.id, tool: exec.name, reason: 'outside_workspace', attemptedPath: candidate }, 'denied')
+        return { kind: 'deny', reason }
+      }
+      return next()
+    })
+  }
+  // Approval requests are a waterfall side channel rather than session events.
+  // Publish the card to subscribed Nexus channels, then answer the ask for
+  // sessions a Nexus channel owns: the host's own answerer routes answers by
+  // the mux frame's rpcId, which an HTTP command client never sees, so a
+  // Nexus approval can only be settled here. Sessions no Nexus channel has
+  // opened delegate down the waterfall unchanged. Run before the Web approval
+  // provider, the terminal answerer, so the card is published even when this
+  // bridge does not claim the ask.
+  ctx.on('approval/request', (request, next) => {
+    const session = request.agent.session
+    const decided = new Set<unknown>()
+    let askedId: string | undefined
+    for (let index = session.events.length - 1; index >= 0; index -= 1) {
+      const event = session.events[index] as SessionEvent
+      if (event.type === 'approval/decided') { decided.add(event.data.id); continue }
+      if (event.type !== 'approval/asked' || decided.has(event.data.id) || event.data.toolName !== request.toolName) continue
+      if ((event.data.callId ?? null) !== (request.callId ?? null)) continue
+      askedId = event.data.id
+      publishPayload(session.id, { kind: 'approval.requested', approvalId: askedId, toolCallId: request.callId, toolName: request.toolName, reason: request.reason })
+      break
+    }
+    if (askedId === undefined || !nexusSessions.has(session.id)) return next()
+    const id = askedId
+    return new Promise<ApprovalOutcome>((resolve) => {
+      const settle = (outcome: ApprovalOutcome): void => {
+        if (!pendingApprovals.delete(id)) return
+        request.signal?.removeEventListener('abort', onAbort)
+        resolve(outcome)
+      }
+      const onAbort = (): void => settle('cancelled')
+      pendingApprovals.set(id, { sessionId: session.id, settle })
+      request.signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }, { prepend: true })
+  await handshake.load()
+  await killSwitch.load()
+  await audit.load()
+  const admin = new NexusAdminController(handshake, killSwitch, audit, config.adminToken, config.adminAllowedNetworks, tokens => {
+    for (const token of tokens) {
+      pendingReplay.delete(token)
+      const stream = streams.get(token)
+      if (stream !== undefined) { clearInterval(stream.timer); streams.delete(token); stream.res.end() }
+    }
+  })
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/nexus/health',
+    handler: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    },
+  }), 'nexus-bridge: /nexus/health')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/nexus/handshake',
+    handler: (req, res) => handshake.handle(req, res),
+  }), 'nexus-bridge: /nexus/handshake')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/nexus/device.register',
+    handler: (req, res) => handshake.handleDeviceRegister(req, res),
+  }), 'nexus-bridge: /nexus/device.register')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/device.register',
+    handler: (req, res) => handshake.handleDeviceRegister(req, res),
+  }), 'nexus-bridge: /device.register')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/nexus/pairing.create',
+    handler: (req, res) => handshake.handlePairingCreate(req, res),
+  }), 'nexus-bridge: /nexus/pairing.create')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/nexus/command',
+    handler: (req, res) => commands.handle(req, res),
+  }), 'nexus-bridge: /nexus/command')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/nexus/events',
+    handler: async (req, res) => {
+      if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+      const token = new URL(req.url ?? '', 'http://127.0.0.1').searchParams.get('token')
+      if (token === null || handshake.getClient(token) === undefined) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'unknown channelToken' })); return }
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+      res.write(':ok\n\n')
+      const timer = setInterval(() => { if (res.writable) res.write(': ping\n\n') }, 30_000)
+      streams.set(token, { res, timer, sessions: new Set() })
+      const queued = pendingReplay.get(token)
+      if (queued !== undefined) {
+        pendingReplay.delete(token)
+        for (const frame of queued) if (res.writable) res.write(frame)
+      }
+      const close = () => { const stream = streams.get(token); if (stream?.res === res) { clearInterval(stream.timer); streams.delete(token) } }
+      req.on('close', close)
+      res.on('close', close)
+      await new Promise<void>(resolve => res.on('finish', resolve))
+    },
+  }), 'nexus-bridge: /nexus/events')
+  for (const [path] of [
+    ['pairing.create', 'POST'], ['device.list', 'GET'], ['device.revoke', 'POST'], ['killswitch.engage', 'POST'], ['killswitch.release', 'POST'], ['killswitch.state', 'GET'],
+  ] as const) {
+    for (const prefix of ['/nexus/admin/', '/admin/']) {
+      ctx.effect(() => ctx.webServer.register({
+        kind: 'exact',
+        path: `${prefix}${path}`,
+        handler: (req, res) => admin.handle(path, req, res),
+      }), `nexus-bridge: ${prefix}${path}`)
+    }
+  }
+}
+
+/** Convert dsh session events to the Nexus reducer payload vocabulary. */
+export function mapSessionEvent(event: SessionEvent): Record<string, unknown> | undefined {
+  const data = (event.data ?? {}) as Record<string, any>
+  switch (event.type) {
+    case 'turn/start': return { kind: 'turn.started', turn: data.turn }
+    case 'assistant/chunk': {
+      const chunk = data.chunk
+      return chunk?.type === 'text-delta' ? { kind: 'message.delta', turn: data.turn, step: data.step, text: chunk.text } : undefined
+    }
+    case 'assistant/message': {
+      const text = Array.isArray(data.message?.content)
+        ? data.message.content.filter((item: any) => item?.type === 'text').map((item: any) => item.text).join('')
+        : ''
+      return { kind: 'message.committed', turn: data.turn, step: data.step, text }
+    }
+    case 'approval/decided': {
+      const outcome = data.outcome
+      if (outcome === 'allowed-once') return { kind: 'approval.resolved', approvalId: data.id, decision: 'allow' }
+      if (outcome === 'rejected' || outcome === 'cancelled' || outcome === 'unavailable') return { kind: 'approval.resolved', approvalId: data.id, decision: 'deny', cause: outcome === 'rejected' ? 'user_denied' : outcome === 'cancelled' ? 'host_cancelled' : 'unavailable' }
+      return undefined
+    }
+    case 'turn/end': {
+      const reason = data.reason?.kind
+      if (reason === 'completed') return { kind: 'turn.completed', turn: data.turn }
+      // dsh persists interrupted turns (for example an approval timeout or
+      // host shutdown) as a terminal event. Omitting this mapping leaves the
+      // iOS reducer in `running` forever when the session is reopened.
+      if (reason === 'aborted' || reason === 'interrupted' || reason === 'disposed') return { kind: 'turn.cancelled', turn: data.turn }
+      if (reason === 'error') return { kind: 'turn.failed', turn: data.turn, error: { code: 'host_error', message: data.reason?.error?.message ?? 'host error' } }
+      return undefined
+    }
+    case 'tool/call': return { kind: 'tool.started', turn: data.turn, step: data.step, toolCallId: data.callId, name: data.name }
+    case 'tool/result': {
+      const failed = data.message?.isError === true || data.isError === true
+      return { kind: 'tool.result', turn: data.turn, step: data.step, toolCallId: data.message?.source?.callId, ok: !failed, output: '' }
+    }
+    default: return undefined
+  }
+}
+
+/** Default plugin export for Loader composition. */
+export default { name, inject, apply }

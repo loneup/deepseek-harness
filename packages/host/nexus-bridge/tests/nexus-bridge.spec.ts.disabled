@@ -1,0 +1,348 @@
+/** Real Loader coverage for the shared-port Nexus route and its disposer. */
+
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { afterEach, describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
+import Include from '@deepseek-ai/cordis-plugin-include'
+import WebServer from '@deepseek-ai/dsh-host-webserver'
+import * as NexusBridge from '../src/index.ts'
+
+let context: Context | undefined
+let root: string | undefined
+const promptPayloads: Array<{ mode: string; content: unknown[] }> = []
+
+function provideApiProxy(): void {
+  context!.provide('apiProxy', {
+    sessions: {
+      list: async (request: { rpcId: string; payload: { cursor?: string } }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { items: [{ id: 'session-listed', cwd: '/tmp/nexus-test-workspace', title: 'Listed', running: true }] } },
+      }),
+      create: async (request: { rpcId: string; payload: { cwd?: string } }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { sessionId: 'session-created' } },
+      }),
+      history: async (request: { rpcId: string; payload: { sessionId: string } }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { events: [], hasMore: false } },
+      }),
+      prompt: async (request: { rpcId: string; payload: { sessionId: string; mode: string; content: unknown[] } }) => {
+        promptPayloads.push({ mode: request.payload.mode, content: request.payload.content })
+        return { rpcId: request.rpcId, result: { ok: true, value: { accepted: true } } }
+      },
+      models: async () => ({ rpcId: 'models', result: { ok: true, value: { current: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' }, routable: true, groups: [], failures: [] } } }),
+      selectModel: async (request: { rpcId: string; payload: unknown }) => ({ rpcId: request.rpcId, result: { ok: true, value: { selected: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' } } } }),
+    },
+    subagents: {
+      list: async () => ({ rpcId: 'subagents-list', result: { ok: true, value: { entries: [], parentAvailable: true } } }),
+      history: async (request: { rpcId: string; payload: unknown }) => ({ rpcId: request.rpcId, result: { ok: true, value: { events: [{ event: { kind: 'message.user', text: 'child' } }], hasMore: false } } }),
+      prompt: async () => ({ rpcId: 'subagents-prompt', result: { ok: true, value: { messageId: 'msg-1' } } }),
+      interrupt: async () => ({ rpcId: 'subagents-interrupt', result: { ok: true, value: { accepted: true } } }),
+    },
+  } as never)
+}
+
+afterEach(async () => {
+  promptPayloads.length = 0
+  await context?.fiber.dispose()
+  context = undefined
+  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  root = undefined
+})
+
+describe('real Loader composition', () => {
+  it('serves the health route and releases it with the plugin fiber', { timeout: 30_000 }, async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-nexus-bridge-'))
+    const configPath = join(root, 'cordis.yml')
+    await writeFile(configPath, [
+      "- name: '@deepseek-ai/dsh-host-webserver'",
+      '  config:',
+      "    host: '127.0.0.1'",
+      '    port: 0',
+      '- id: nexus-bridge',
+      "  name: '@deepseek-ai/dsh-host-nexus-bridge'",
+      '',
+    ].join('\n'))
+
+    context = new Context()
+    provideApiProxy()
+    context.baseUrl = pathToFileURL(root).href + '/'
+    await context.plugin(Loader)
+    context.loader.builtins.include = Include
+    context.loader.internal = {
+      version: 'v2',
+      async import(specifier: string) {
+        const modules = new Map<string, unknown>([
+          ['@deepseek-ai/dsh-host-webserver', WebServer],
+          ['@deepseek-ai/dsh-host-nexus-bridge', NexusBridge],
+        ])
+        if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`)
+        return modules.get(specifier)
+      },
+    } as unknown as NonNullable<typeof context.loader.internal>
+    await context.loader.create({
+      name: 'cordis:include',
+      config: { path: pathToFileURL(configPath).href },
+    })
+    await context.loader.await()
+
+    const port = context.webServer.port
+    const response = await fetch(`http://127.0.0.1:${String(port)}/nexus/health`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+
+    const entry = [...context.loader.entries()].find(item => item.options.id === 'nexus-bridge')
+    expect(entry).toBeDefined()
+    await entry!.fiber?.dispose()
+    expect((await fetch(`http://127.0.0.1:${String(port)}/nexus/health`)).status).toBe(404)
+  })
+
+  it('registers the dsh pre-execution deny gate for a read-only session', { timeout: 30_000 }, async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-nexus-pre-execute-'))
+    const configPath = join(root, 'cordis.yml')
+    await writeFile(configPath, [
+      "- name: '@deepseek-ai/dsh-host-webserver'", '  config:', "    host: '127.0.0.1'", '    port: 0',
+      '- id: nexus-bridge', "  name: '@deepseek-ai/dsh-host-nexus-bridge'", '',
+    ].join('\n'))
+    context = new Context(); provideApiProxy(); context.baseUrl = pathToFileURL(root).href + '/'
+    await context.plugin(Loader); context.loader.builtins.include = Include
+    context.loader.internal = { version: 'v2', async import(specifier: string) {
+      const modules = new Map<string, unknown>([['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-host-nexus-bridge', NexusBridge]])
+      if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`)
+      return modules.get(specifier)
+    } } as unknown as NonNullable<typeof context.loader.internal>
+    await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } }); await context.loader.await()
+    const session = { id: 'session-pre-exec', events: [{ type: 'permission/preset', data: { preset: 'read-only' } }] }
+    const exec = { callId: 'call-pre-exec', rootCallId: 'call-pre-exec', name: 'Write', arguments: { file_path: '/tmp/out.txt' }, agent: { session }, signal: new AbortController().signal, token: Symbol('token') }
+    const decision = await context.waterfall(context as never, 'tools/pre-execute', exec as never, (() => Promise.resolve({ kind: 'allow' as const })) as never)
+    expect(decision).toEqual({ kind: 'deny', reason: 'This session is read-only (permissionPreset: read-only). Write operations are not allowed.' })
+  })
+
+  it('performs the v4 challenge response on the shared port and forwards image blocks', { timeout: 30_000 }, async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-nexus-handshake-'))
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+    const rawPublicKey = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')
+    const registryPath = join(root, 'devices.json')
+    await writeFile(registryPath, JSON.stringify({ devices: [{ deviceId: 'dev_test_device', publicKey: rawPublicKey, revokedAt: null }] }))
+    const configPath = join(root, 'cordis.yml')
+    await writeFile(configPath, [
+      "- name: '@deepseek-ai/dsh-host-webserver'",
+      '  config:',
+      "    host: '127.0.0.1'",
+      '    port: 0',
+      '- id: nexus-bridge',
+      "  name: '@deepseek-ai/dsh-host-nexus-bridge'",
+      `  config:\n    registryPath: '${registryPath}'`,
+      '',
+    ].join('\n'))
+    context = new Context()
+    provideApiProxy()
+    context.baseUrl = pathToFileURL(root).href + '/'
+    await context.plugin(Loader)
+    context.loader.builtins.include = Include
+    context.loader.internal = {
+      version: 'v2',
+      async import(specifier: string) {
+        const modules = new Map<string, unknown>([
+          ['@deepseek-ai/dsh-host-webserver', WebServer],
+          ['@deepseek-ai/dsh-host-nexus-bridge', NexusBridge],
+        ])
+        if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`)
+        return modules.get(specifier)
+      },
+    } as unknown as NonNullable<typeof context.loader.internal>
+    await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
+    await context.loader.await()
+    const url = `http://127.0.0.1:${String(context.webServer.port)}/nexus/handshake`
+    const hello = { type: 'handshake.hello', protocolVersion: 4, clientPlatform: 'ios', clientId: 'ios-test', deviceId: 'dev_test_device', capabilities: ['streaming', 'unknown'] }
+    const challengeResponse = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(hello) })
+    expect(challengeResponse.status).toBe(200)
+    const challenge = await challengeResponse.json() as { nonce: string }
+    const signature = sign(null, Buffer.from(challenge.nonce, 'base64'), privateKey).toString('base64')
+    const welcomeResponse = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'handshake.auth_response', deviceId: 'dev_test_device', signature }) })
+    expect(welcomeResponse.status).toBe(200)
+    const welcome = await welcomeResponse.json() as { channelToken: string }
+    expect(welcome).toMatchObject({ type: 'handshake.welcome', protocolVersion: 4, clientId: 'ios-test', acceptedCapabilities: ['streaming'] })
+    const command = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-list', method: 'session.list', payload: {}, channelToken: welcome.channelToken }),
+    })
+    expect(command.status).toBe(200)
+    expect(await command.json()).toEqual({ type: 'command.response', requestId: 'req-list', ok: true, value: { sessions: [{ sessionId: 'session-listed', cwd: '/tmp/nexus-test-workspace', title: 'Listed', running: true }] } })
+    const childHistory = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-child-history', method: 'subagent.history', payload: { parentSessionId: 'session-listed', childSessionId: 'child-1', mode: 'continuable', maxMessages: 20 }, channelToken: welcome.channelToken }),
+    })
+    expect(childHistory.status).toBe(200)
+    expect(await childHistory.json()).toEqual({ type: 'command.response', requestId: 'req-child-history', ok: true, value: { events: [{ event: { kind: 'message.user', text: 'child' } }], hasMore: false } })
+    const created = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-create', method: 'session.create', payload: { cwd: '/tmp/project' }, channelToken: welcome.channelToken }),
+    })
+    expect(created.status).toBe(200)
+    expect(await created.json()).toEqual({ type: 'command.response', requestId: 'req-create', ok: true, value: { sessionId: 'session-created' } })
+    const opened = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-open', method: 'session.open', payload: { sessionId: 'session-created' }, channelToken: welcome.channelToken }),
+    })
+    expect(opened.status).toBe(200)
+    expect(await opened.json()).toEqual({ type: 'command.response', requestId: 'req-open', ok: true, value: { sessionId: 'session-created' } })
+    const turn = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-turn', method: 'turn.start', payload: { sessionId: 'session-created', content: [{ type: 'text', text: 'hello' }, { type: 'image', mediaType: 'image/png', data: Buffer.from('png-bytes').toString('base64'), name: 'screen.png' }] }, channelToken: welcome.channelToken }),
+    })
+    expect(turn.status).toBe(200)
+    expect(await turn.json()).toEqual({ type: 'command.response', requestId: 'req-turn', ok: true, value: { accepted: true } })
+    expect(promptPayloads).toEqual([{ mode: 'queue', content: [{ type: 'text', text: 'hello' }, { type: 'image', mediaType: 'image/png', data: Buffer.from('png-bytes').toString('base64'), name: 'screen.png' }] }])
+    const steer = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-steer', method: 'turn.steer', payload: { sessionId: 'session-created', content: [{ type: 'text', text: 'adjust course' }] }, channelToken: welcome.channelToken }),
+    })
+    expect(await steer.json()).toEqual({ type: 'command.response', requestId: 'req-steer', ok: true, value: { accepted: true } })
+    expect(promptPayloads.at(-1)).toEqual({ mode: 'steer', content: [{ type: 'text', text: 'adjust course' }] })
+    const unsupported = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-bad-image', method: 'turn.start', payload: { sessionId: 'session-created', content: [{ type: 'text', text: 'hello' }, { type: 'image', mediaType: 'image/heic', data: 'AA==' }] }, channelToken: welcome.channelToken }),
+    })
+    expect(await unsupported.json()).toMatchObject({ ok: false, error: { code: 'malformed' } })
+    const oversizedData = Buffer.alloc(5 * 1024 * 1024 + 1).toString('base64')
+    const oversized = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-large-image', method: 'turn.start', payload: { sessionId: 'session-created', content: [{ type: 'text', text: 'hello' }, { type: 'image', mediaType: 'image/png', data: oversizedData }] }, channelToken: welcome.channelToken }),
+    })
+    expect(await oversized.json()).toMatchObject({ ok: false, error: { code: 'malformed' } })
+    expect(promptPayloads).toHaveLength(2)
+    const rejected = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId: 'req-nope', method: 'session.list', payload: {}, channelToken: 'invalid' }),
+    })
+    expect(rejected.status).toBe(401)
+  })
+
+  it('proxies model directory and selection commands', { timeout: 30_000 }, async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'dsh-nexus-models-'))
+    root = rootDir
+    const configPath = join(rootDir, 'cordis.yml')
+    await writeFile(configPath, [
+      "- name: '@deepseek-ai/dsh-host-webserver'", '  config:', "    host: '127.0.0.1'", '    port: 0',
+      '- id: nexus-bridge', "  name: '@deepseek-ai/dsh-host-nexus-bridge'", '',
+    ].join('\n'))
+    context = new Context(); provideApiProxy(); context.baseUrl = pathToFileURL(rootDir).href + '/'
+    await context.plugin(Loader); context.loader.builtins.include = Include
+    context.loader.internal = { version: 'v2', async import(specifier: string) {
+      const modules = new Map<string, unknown>([['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-host-nexus-bridge', NexusBridge]])
+      if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`)
+      return modules.get(specifier)
+    } } as unknown as NonNullable<typeof context.loader.internal>
+    await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } }); await context.loader.await()
+    const response = await fetch(`http://127.0.0.1:${String(context.webServer.port)}/nexus/command`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'command.request', requestId: 'req-models', method: 'session.models', payload: { sessionId: 'session-created' }, channelToken: 'invalid' }) })
+    expect(response.status).toBe(401)
+  })
+
+  it('registers a device with a one-time pairing code and persists only its public key', { timeout: 30_000 }, async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-nexus-register-'))
+    const { publicKey } = generateKeyPairSync('ed25519')
+    const rawPublicKey = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')
+    const pairingCode = Buffer.alloc(32, 7).toString('base64')
+    const registryPath = join(root, 'devices.json')
+    await writeFile(registryPath, JSON.stringify({ pairingCodes: [{ codeHash: createHash('sha256').update(Buffer.from(pairingCode, 'base64')).digest('hex'), used: false }] }))
+    const configPath = join(root, 'cordis.yml')
+    await writeFile(configPath, [
+      "- name: '@deepseek-ai/dsh-host-webserver'", '  config:', "    host: '127.0.0.1'", '    port: 0',
+      '- id: nexus-bridge', "  name: '@deepseek-ai/dsh-host-nexus-bridge'", `  config:\n    registryPath: '${registryPath}'`, '',
+    ].join('\n'))
+    context = new Context(); provideApiProxy(); context.baseUrl = pathToFileURL(root).href + '/'
+    await context.plugin(Loader); context.loader.builtins.include = Include
+    context.loader.internal = { version: 'v2', async import(specifier: string) {
+      const modules = new Map<string, unknown>([['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-host-nexus-bridge', NexusBridge]])
+      if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`)
+      return modules.get(specifier)
+    } } as unknown as NonNullable<typeof context.loader.internal>
+    await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } }); await context.loader.await()
+    const url = `http://127.0.0.1:${String(context.webServer.port)}/nexus/device.register`
+    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingCode, publicKey: rawPublicKey }) })
+    expect(response.status).toBe(200)
+    const body = await response.json() as { ok: boolean; deviceId: string }
+    expect(body.ok).toBe(true); expect(body.deviceId).toMatch(/^dev_[A-Za-z0-9_-]{16}$/)
+    const second = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingCode, publicKey: rawPublicKey }) })
+    expect(await second.json()).toMatchObject({ ok: false, error: { code: 'pairing_code_used' } })
+    const persisted = JSON.parse(await (await import('node:fs/promises')).readFile(registryPath, 'utf8')) as { devices: Array<{ publicKey: string; deviceId: string }>; pairingCodes: Array<{ codeHash: string; used: boolean }> }
+    expect(persisted.devices).toHaveLength(1); expect(persisted.devices[0]).toMatchObject({ publicKey: rawPublicKey, deviceId: body.deviceId }); expect(persisted.pairingCodes[0]?.used).toBe(true)
+  })
+
+  it('settles approvals a Nexus channel owns through approval.respond', { timeout: 30_000 }, async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-nexus-approval-'))
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+    const rawPublicKey = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')
+    const registryPath = join(root, 'devices.json')
+    await writeFile(registryPath, JSON.stringify({ devices: [{ deviceId: 'dev_test_device', publicKey: rawPublicKey, revokedAt: null }] }))
+    const configPath = join(root, 'cordis.yml')
+    await writeFile(configPath, [
+      "- name: '@deepseek-ai/dsh-host-webserver'", '  config:', "    host: '127.0.0.1'", '    port: 0',
+      '- id: nexus-bridge', "  name: '@deepseek-ai/dsh-host-nexus-bridge'", `  config:\n    registryPath: '${registryPath}'`, '',
+    ].join('\n'))
+    context = new Context(); provideApiProxy(); context.baseUrl = pathToFileURL(root).href + '/'
+    await context.plugin(Loader); context.loader.builtins.include = Include
+    context.loader.internal = { version: 'v2', async import(specifier: string) {
+      const modules = new Map<string, unknown>([['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-host-nexus-bridge', NexusBridge]])
+      if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`)
+      return modules.get(specifier)
+    } } as unknown as NonNullable<typeof context.loader.internal>
+    await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } }); await context.loader.await()
+    const base = `http://127.0.0.1:${String(context.webServer.port)}`
+    const hello = { type: 'handshake.hello', protocolVersion: 4, clientPlatform: 'ios', clientId: 'ios-test', deviceId: 'dev_test_device', capabilities: ['streaming'] }
+    const challenge = await (await fetch(`${base}/nexus/handshake`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(hello) })).json() as { nonce: string }
+    const signature = sign(null, Buffer.from(challenge.nonce, 'base64'), privateKey).toString('base64')
+    const welcome = await (await fetch(`${base}/nexus/handshake`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'handshake.auth_response', deviceId: 'dev_test_device', signature }) })).json() as { channelToken: string }
+    const command = (requestId: string, method: string, payload: Record<string, unknown>) => fetch(`${base}/nexus/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'command.request', requestId, method, payload, channelToken: welcome.channelToken }),
+    })
+    // Opening the session marks it Nexus-owned, so the bridge claims its approvals.
+    expect(await (await command('req-open', 'session.open', { sessionId: 'session-created' })).json()).toMatchObject({ ok: true })
+
+    const controller = new AbortController()
+    const session = { id: 'session-created', events: [{ type: 'approval/asked', data: { id: 'appr-1', toolName: 'write', callId: 'call-1' } }] }
+    const ask = context.waterfall(context as never, 'approval/request', {
+      agent: { session }, toolName: 'write', callId: 'call-1', signal: controller.signal,
+    } as never, (() => Promise.resolve('unavailable')) as never)
+    const allowed = await (await command('req-allow', 'approval.respond', { sessionId: 'session-created', approvalId: 'appr-1', outcome: 'allowed-once' })).json() as { ok: boolean }
+    expect(allowed.ok).toBe(true)
+    await expect(ask).resolves.toBe('allowed-once')
+    // A settled id is gone: a repeated or stale response fails closed.
+    const stale = await (await command('req-stale', 'approval.respond', { sessionId: 'session-created', approvalId: 'appr-1', outcome: 'rejected' })).json() as { ok: boolean; error?: { code: string } }
+    expect(stale.ok).toBe(false)
+    expect(stale.error?.code).toBe('approval_not_pending')
+    // A response naming a different session never settles the entry.
+    const session2 = { id: 'session-created', events: [{ type: 'approval/asked', data: { id: 'appr-2', toolName: 'write', callId: 'call-2' } }] }
+    const ask2 = context.waterfall(context as never, 'approval/request', {
+      agent: { session: session2 }, toolName: 'write', callId: 'call-2', signal: new AbortController().signal,
+    } as never, (() => Promise.resolve('unavailable')) as never)
+    const wrongSession = await (await command('req-wrong', 'approval.respond', { sessionId: 'session-listed', approvalId: 'appr-2', outcome: 'rejected' })).json() as { ok: boolean }
+    expect(wrongSession.ok).toBe(false)
+    const rejected = await (await command('req-reject', 'approval.respond', { sessionId: 'session-created', approvalId: 'appr-2', outcome: 'rejected' })).json() as { ok: boolean }
+    expect(rejected.ok).toBe(true)
+    await expect(ask2).resolves.toBe('rejected')
+    // Aborting the ask settles the bridge entry as cancelled.
+    const controller3 = new AbortController()
+    const session3 = { id: 'session-created', events: [{ type: 'approval/asked', data: { id: 'appr-3', toolName: 'write', callId: 'call-3' } }] }
+    const ask3 = context.waterfall(context as never, 'approval/request', {
+      agent: { session: session3 }, toolName: 'write', callId: 'call-3', signal: controller3.signal,
+    } as never, (() => Promise.resolve('unavailable')) as never)
+    controller3.abort()
+    await expect(ask3).resolves.toBe('cancelled')
+    const late = await (await command('req-late', 'approval.respond', { sessionId: 'session-created', approvalId: 'appr-3', outcome: 'allowed-once' })).json() as { ok: boolean }
+    expect(late.ok).toBe(false)
+    // Sessions no Nexus channel opened delegate to the host's own answerer.
+    const foreign = { id: 'session-foreign', events: [{ type: 'approval/asked', data: { id: 'appr-4', toolName: 'write', callId: 'call-4' } }] }
+    const ask4 = context.waterfall(context as never, 'approval/request', {
+      agent: { session: foreign }, toolName: 'write', callId: 'call-4', signal: new AbortController().signal,
+    } as never, (() => Promise.resolve('unavailable')) as never)
+    await expect(ask4).resolves.toBe('unavailable')
+  })
+})
