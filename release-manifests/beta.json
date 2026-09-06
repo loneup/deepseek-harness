@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "environment": "beta",
+  "channel": "beta",
+  "dshVersion": "0.1.3-alpha.1",
+  "dshCommit": "c02ff3445150ebece9da48ffde717ce600df4f0e",
+  "nexusCommit": "258f9d00cea230481059ce339358cdeacfd82296",
+  "adapterId": "dsh-013",
+  "protocolVersion": 4,
+  "plugins": {
+    "@deepseek-ai/dsh-client-modules": {
+      "version": "0.1.3-alpha.1",
+      "sourceCommit": "c02ff3445150ebece9da48ffde717ce600df4f0e"
+    },
+    "@deepseek-ai/dsh-cordis-client-runner": {
+      "version": "0.1.3-alpha.1",
+      "sourceCommit": "c02ff3445150ebece9da48ffde717ce600df4f0e"
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "version": "0.1.3-alpha.1",
+      "sourceCommit": "c02ff3445150ebece9da48ffde717ce600df4f0e"
+    },
+    "@deepseek-ai/dsh-client-ui-settings-nexus": {
+      "version": "0.1.3-alpha.1",
+      "sourceCommit": "c02ff3445150ebece9da48ffde717ce600df4f0e"
+    }
+  },
+  "build": {
+    "nodeVersion": "v24.11.1",
+    "pnpmLockSha256": "7f136d9482c75868dc055e16471f507271f4220df7e2af2c249ece5d4bb2c085",
+    "buildTimestamp": "2026-09-06T11:33:07Z",
+    "note": "workspace-source build from the migration worktree; not a published npm release"
+  }
+}

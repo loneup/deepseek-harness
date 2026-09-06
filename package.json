@@ -46,6 +46,8 @@
     "test:web": "npm run build && npm run test:web:built",
     "test:web:refresh": "npm run build && DSH_SNAPSHOT=refresh vitest run --config vitest.web.config.ts",
     "test:web:built": "vitest run --config vitest.web.config.ts",
+    "web:beta": "tsx scripts/run-web-env.ts beta",
+    "web:production": "tsx scripts/run-web-env.ts production",
     "test:web:ci": "tsx scripts/run-web-snapshots.ts",
     "test:web:perf": "npm run build && npm run test:web:perf:built",
     "test:web:perf:built": "DSH_SNAPSHOT=replay vitest run --config vitest.web.perf.config.ts",
