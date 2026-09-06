@@ -426,18 +426,11 @@ export class AgentLoop extends Service implements AgentFactory {
       const meta = cwd === undefined ? {} : { cwd }
       if (resumeSessionId === undefined || resumeSessionId === '') {
         const configuredId = sessionId ?? brandString<SessionId>(`${id}-session-${randomUUID()}`)
-        const persistence = sessionId === undefined ? undefined : ctx.get('sessionPersistence')
-        if (persistence === undefined) {
-          const startup = this.create(configuredId, options, meta).then(() => undefined, (error: unknown) => {
+        const startup = this.startConfiguredAgent(ctx, sessionId, configuredId, options, meta)
+          .then(() => undefined, (error: unknown) => {
             this.reportConfiguredStartupFailure(id, 'restore', configuredId, error)
           })
-          this.ownership.trackStartup(startup)
-        } else {
-          const startup = this.restoreOrCreateConfigured(ctx, persistence, configuredId, options, meta).catch((error: unknown) => {
-            this.reportConfiguredStartupFailure(id, 'restore', configuredId, error)
-          })
-          this.ownership.trackStartup(startup)
-        }
+        this.ownership.trackStartup(startup)
         continue
       }
       ctx.effect(() => {
@@ -473,6 +466,49 @@ export class AgentLoop extends Service implements AgentFactory {
       } catch (listenerError: unknown) {
         this.ctx.logger.warn(`agent "${configId}": config-start-failed listener threw: ${errorChain(listenerError)}`)
       }
+    }
+  }
+
+  /**
+   * Start one configured agent, restoring its materialized history when it
+   * has an exact identity and session persistence is or becomes available.
+   *
+   * A concurrently mounted plugin tree (Loader worlds) activates sibling
+   * entries in arbitrary order, so a persistence provider listed anywhere in
+   * the same tree may still be importing when this factory starts. Reading
+   * the service once at construction time silently raced that import: exact
+   * identities fell into backend-less fresh creates that dropped their
+   * history, and fresh configured agents were created without their backend
+   * and never materialized. When the service is not yet visible and a Loader
+   * owns this tree, wait for the tree to settle once — the same gate boot
+   * itself uses — and re-read; a settled tree without the service keeps the
+   * backend-less create. Compositions without a Loader mount services
+   * sequentially before this plugin, so the initial read is already final
+   * there.
+   */
+  private async startConfiguredAgent(
+    ownerCtx: Context,
+    sessionId: SessionId | undefined,
+    configuredId: SessionId,
+    options: AgentOptions,
+    meta: Pick<SessionHeader, 'cwd'>,
+  ): Promise<void> {
+    let persistence = ownerCtx.get('sessionPersistence')
+    if (persistence === undefined) {
+      const loader = ownerCtx.get('loader') as { await(): Promise<void> } | undefined
+      if (loader !== undefined) {
+        // A sibling entry that fails to settle rejects this await; the
+        // services that did come up still define the outcome below.
+        const settled = loader.await().catch(() => undefined)
+        await this.ownership.waitWhileActive(settled)
+        if (!this.ownership.isActive()) return
+        persistence = ownerCtx.get('sessionPersistence')
+      }
+    }
+    if (sessionId !== undefined && persistence !== undefined) {
+      await this.restoreOrCreateConfigured(ownerCtx, persistence, configuredId, options, meta)
+    } else {
+      await this.create(configuredId, options, meta)
     }
   }
 
