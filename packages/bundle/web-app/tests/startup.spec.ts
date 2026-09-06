@@ -3,7 +3,8 @@
  * releases a consumer whose config reads `ctx.webStartup` directly.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -11,6 +12,10 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import { internals, provideCmdline } from '@deepseek-ai/dsh-cmdline'
+import ClientModuleRegistry from '@deepseek-ai/dsh-client-modules'
+import uiSettingsNexusNode from '@deepseek-ai/dsh-client-ui-settings-nexus'
+import * as frontendStatic from '@deepseek-ai/dsh-host-frontend-static'
+import HttpServer from '@deepseek-ai/dsh-host-webserver'
 import { afterEach, describe, expect, it } from 'vitest'
 import { apply, WEB_STARTUP_SERVICE, type WebStartupValues } from '../src/startup.ts'
 
@@ -145,5 +150,159 @@ describe('web command-line provider', () => {
     expect(values).toBeUndefined()
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([1])
+  })
+})
+
+// ── Web startup HTTP surface ─────────────────────────────────────────────────
+//
+// REAL-composition coverage of the boot surface the `--profile web` command
+// serves: webserver + client-modules (the /plugins node half) + the
+// ui-settings-nexus browser roster row + the frontend-static fallback seat
+// over a fixture dist, booted through the vendored Loader exactly like the
+// webserver suite. It pins the /plugins URL contract — served resources are
+// `??` combo URLs with a rev query; a bare `/plugins/<id>/client.js` is an
+// unknown resource — and that the homepage injects the composed boot graph
+// with non-empty JavaScript bundles for every advertised script.
+
+const MODULES_ID = '@deepseek-ai/dsh-client-modules'
+const NEXUS_SETTINGS_ID = '@deepseek-ai/dsh-client-ui-settings-nexus'
+
+/** The workspace package roots the fixture tree resolves the client rows to. */
+function workspacePackageRoot(packageName: string): string {
+  const manifest = createRequire(import.meta.url).resolve(`${packageName}/package.json`)
+  return join(manifest, '..')
+}
+
+interface StartedWeb {
+  /** The OS-assigned listening port of the booted webserver. */
+  port: number
+  /** The composed boot graph entries by plugin id. */
+  entries: Map<string, { url: string }>
+  homepage: string
+}
+
+/**
+ * Boot the real web surface over a fixture dist: webserver (port 0), the
+ * client-modules node half scanning the two real workspace client packages,
+ * and the frontend-static fallback seat. The connection service is stubbed to
+ * the authorized case because authentication is a Connection node-half concern,
+ * not part of this startup surface.
+ */
+async function bootWebSurface(): Promise<StartedWeb> {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-web-startup-http-'))
+  tempDirs.push(root)
+  // The fixture tree resolves client rows through its own node_modules, so the
+  // real workspace packages (and their built lib/client.js artifacts) are
+  // linked in — a missing build fails the composition loud, exactly like a
+  // real `dsh --profile web` launch before `pnpm run build:lib:client`.
+  for (const packageName of [MODULES_ID, NEXUS_SETTINGS_ID]) {
+    const scope = join(root, 'node_modules', ...packageName.split('/').slice(0, -1))
+    mkdirSync(scope, { recursive: true })
+    symlinkSync(workspacePackageRoot(packageName), join(scope, packageName.split('/').at(-1)!), 'dir')
+  }
+  mkdirSync(join(root, 'dist', 'assets'), { recursive: true })
+  const distIndex = join(root, 'dist', 'index.html')
+  writeFileSync(distIndex, '<!doctype html><html><head><title>fixture dist</title></head><body><div id="root"></div><script type="module" src="./assets/main.js"></script></body></html>')
+  writeFileSync(join(root, 'dist', 'assets', 'main.js'), 'console.log("fixture dist");\n')
+  const configPath = join(root, 'cordis.yml')
+  writeFileSync(configPath, [
+    '- id: webserver',
+    "  name: '@deepseek-ai/dsh-host-webserver'",
+    '  config:',
+    "    host: '127.0.0.1'",
+    '    port: 0',
+    '- id: connection-stub',
+    '  name: connection-stub',
+    '- id: modules',
+    `  name: '${MODULES_ID}'`,
+    '- id: ui-settings-nexus',
+    `  name: '${NEXUS_SETTINGS_ID}'`,
+    '- id: frontend-static',
+    "  name: '@deepseek-ai/dsh-host-frontend-static'",
+    '  config:',
+    `    distIndex: ${JSON.stringify(distIndex)}`,
+    '',
+  ].join('\n'))
+
+  const connectionStub = {
+    name: 'connection-stub',
+    inject: [] as const,
+    apply: (ctx: Context): void => {
+      ctx.provide('connection', { authorizeIndex: () => true })
+    },
+  }
+  const modules = new Map<string, unknown>([
+    ['@deepseek-ai/dsh-host-webserver', HttpServer],
+    ['connection-stub', connectionStub],
+    [MODULES_ID, ClientModuleRegistry],
+    [NEXUS_SETTINGS_ID, uiSettingsNexusNode],
+    ['@deepseek-ai/dsh-host-frontend-static', frontendStatic],
+  ])
+  const ctx = new Context()
+  ctx.baseUrl = pathToFileURL(root).href + '/'
+  await ctx.plugin(Loader)
+  ctx.loader.builtins.include = Include
+  ctx.loader.internal = {
+    version: 'v2',
+    async import(specifier: string) {
+      if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`)
+      return modules.get(specifier)
+    },
+  } as unknown as NonNullable<typeof ctx.loader.internal>
+  await ctx.loader.create({
+    name: 'cordis:include',
+    config: { path: pathToFileURL(configPath).href },
+  })
+  await ctx.loader.await()
+  disposers.push(async () => { await ctx.fiber.dispose() })
+
+  const webServer = ctx.webServer
+  const graph = ctx.clientModules.graph()
+  const entries = new Map(graph.entries.map(entry => [entry.id, { url: entry.url }]))
+  const homepage = await (await fetch(`http://127.0.0.1:${String(webServer.port)}/`)).text()
+  return { port: webServer.port, entries, homepage }
+}
+
+describe('web startup HTTP surface', () => {
+  it('serves the composed roster: client-modules and ui-settings-nexus bundles answer 200 with non-empty JavaScript', async () => {
+    const started = await bootWebSurface()
+    for (const id of [MODULES_ID, NEXUS_SETTINGS_ID]) {
+      const entry = started.entries.get(id)
+      expect(entry, `${id} must be composed into the boot graph`).toBeDefined()
+      const response = await fetch(`http://127.0.0.1:${String(started.port)}${entry!.url}`)
+      expect(response.status, `${entry!.url} must answer 200`).toBe(200)
+      expect(response.headers.get('content-type')).toBe('text/javascript; charset=utf-8')
+      const body = await response.text()
+      expect(body.length, `${entry!.url} must serve a non-empty bundle`).toBeGreaterThan(0)
+      expect(body).toContain('window.__ModuleLoader__.load(')
+      expect(body).toContain(`id: ${JSON.stringify(id)}`)
+    }
+  })
+
+  it('keeps the /plugins URL contract: bare single-plugin paths and unknown ids are unknown resources', async () => {
+    const started = await bootWebSurface()
+    // The served form is always the `??` combo URL with a rev query (what the
+    // homepage injects); the bare `/plugins/<id>/client.js` shape is 404.
+    for (const path of [
+      `/plugins/${MODULES_ID}/client.js`,
+      `/plugins/${NEXUS_SETTINGS_ID}/client.js`,
+      '/plugins/@deepseek-ai/dsh-client-runtime/client.js',
+      started.entries.get(MODULES_ID)!.url.replace(/^\/plugins\/\?\?/, '/plugins/'),
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${String(started.port)}${path}`)
+      expect(response.status, `${path} must be an unknown resource`).toBe(404)
+    }
+  })
+
+  it('injects the full boot graph into the homepage so the page can start every roster plugin', async () => {
+    const started = await bootWebSurface()
+    expect(started.homepage).toContain('__DSH_BOOT__')
+    for (const id of [MODULES_ID, NEXUS_SETTINGS_ID]) {
+      const entry = started.entries.get(id)
+      expect(entry, `${id} must be composed into the boot graph`).toBeDefined()
+      // The homepage advertises the plugin both as a preload and as the
+      // executed script tag, with the exact served URL.
+      expect(started.homepage).toContain(entry!.url)
+    }
   })
 })
