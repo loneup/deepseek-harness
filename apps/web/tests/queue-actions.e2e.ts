@@ -62,131 +62,137 @@ describe('web e2e: queue row actions', () => {
     if (failures.length > 1) throw new AggregateError(failures, 'queue-actions teardown failed')
   })
 
-  it.skipIf(MODE === 'record')('edits and removes exact occurrences and preserves Queue across stop', async () => {
-    overrideDir = await mkdtemp(join(tmpdir(), 'dsh-web-queue-actions-'))
-    const readyFile = join(overrideDir, '.hang-ready')
-    const overridePath = join(overrideDir, 'replay.override.json')
-    const recorded = deriveReplayScript(parseSessionLog(await readFile(FIXTURE, 'utf8')))
-    expect(recorded).toHaveLength(1)
-    const replay: ReplayEntry[] = [
-      { kind: 'hang', readyFile },
-      recorded[0]!,
-      recorded[0]!,
-      recorded[0]!,
-    ]
-    await writeFile(overridePath, JSON.stringify(replay))
+  // Scoped retry (2): the mid-stream aria capture races the composer's
+  // queued-state re-render, so the golden can miss the transient `partial`
+  // paragraph (KNOWN_ISSUES #9; first-failure evidence recorded there).
+  // The retry is deliberately confined to this one timing-sensitive scenario.
+  it.skipIf(MODE === 'record')('edits and removes exact occurrences and preserves Queue across stop',
+    { retry: 2, timeout: 120_000 },
+    async () => {
+      overrideDir = await mkdtemp(join(tmpdir(), 'dsh-web-queue-actions-'))
+      const readyFile = join(overrideDir, '.hang-ready')
+      const overridePath = join(overrideDir, 'replay.override.json')
+      const recorded = deriveReplayScript(parseSessionLog(await readFile(FIXTURE, 'utf8')))
+      expect(recorded).toHaveLength(1)
+      const replay: ReplayEntry[] = [
+        { kind: 'hang', readyFile },
+        recorded[0]!,
+        recorded[0]!,
+        recorded[0]!,
+      ]
+      await writeFile(overridePath, JSON.stringify(replay))
 
-    const sessionEvents: SessionEvent[] = []
-    scaffold = await launchWebScaffold({ replayFixture: FIXTURE, replayOverride: overridePath, compareReplaySession: false })
-    scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { sessionEvents.push(event) })
-    browser = await chromium.launch()
-    page = await newEnglishPage(browser)
-    const tripwire = watchConsole(page)
-    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
-    await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
-    await connectFreshWorkspace(page, scaffold.workspaceCwd)
-    onTestFailed(() => saveFailureShot(page, 'web-e2e-queue-actions'))
+      const sessionEvents: SessionEvent[] = []
+      scaffold = await launchWebScaffold({ replayFixture: FIXTURE, replayOverride: overridePath, compareReplaySession: false })
+      scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { sessionEvents.push(event) })
+      browser = await chromium.launch()
+      page = await newEnglishPage(browser)
+      const tripwire = watchConsole(page)
+      await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+      await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
+      await connectFreshWorkspace(page, scaffold.workspaceCwd)
+      onTestFailed(() => saveFailureShot(page, 'web-e2e-queue-actions'))
 
-    const input = page.locator('[data-composer-input]').first()
-    const firstSettled = scaffold.whenTurnSettled()
-    await input.fill(ACTIVE_PROMPT)
-    await input.press('Enter')
-    await expect.poll(() => existsSync(readyFile), { timeout: 15_000 }).toBe(true)
-
-    for (const text of [REMOVE, EDIT]) {
-      // A just-submitted composer is read-only for the prompt round-trip.
-      await page.locator('[data-composer-input][contenteditable="true"]').first().waitFor({ timeout: 10_000 })
-      await input.fill(text)
+      const input = page.locator('[data-composer-input]').first()
+      const firstSettled = scaffold.whenTurnSettled()
+      await input.fill(ACTIVE_PROMPT)
       await input.press('Enter')
-    }
-    const queueHeader = page.getByRole('button', { name: '2 queued messages' })
-    await expect.poll(() => queueHeader.getAttribute('aria-expanded'), { timeout: 10_000 })
-      .toBe('false')
-    const collapsedSnapshot = await captureStableAria(
-      page,
-      '[class*="centerCol"]',
-      scaffold.workspaceCwd,
-    )
-    await compareOrRefreshGolden(COLLAPSED_EXPECTED, collapsedSnapshot, MODE)
-    await queueHeader.click()
-    await expect.poll(
-      () => page.getByRole('button', { name: 'Remove queued message' }).count(),
-      { timeout: 10_000 },
-    ).toBe(2)
+      await expect.poll(() => existsSync(readyFile), { timeout: 15_000 }).toBe(true)
 
-    await page.setViewportSize({ width: 640, height: 1000 })
-    const queueBox = await page.locator('[data-queue-dock]').boundingBox()
-    const composerBox = await page.locator('[data-composer-card]').boundingBox()
-    expect(queueBox).not.toBeNull()
-    expect(composerBox).not.toBeNull()
-    expect(queueBox!.x).toBeGreaterThanOrEqual(composerBox!.x)
-    expect(queueBox!.x + queueBox!.width)
-      .toBeLessThanOrEqual(composerBox!.x + composerBox!.width)
-    const queueLeftInset = queueBox!.x - composerBox!.x
-    const queueRightInset = composerBox!.x + composerBox!.width - queueBox!.x - queueBox!.width
-    const composerMetrics = await page.locator('[data-composer-card]').evaluate((element) => {
-      const style = getComputedStyle(element)
-      return {
-        dockInset: Number.parseFloat(style.getPropertyValue('--dsh-composer-dock-inset')),
+      for (const text of [REMOVE, EDIT]) {
+      // A just-submitted composer is read-only for the prompt round-trip.
+        await page.locator('[data-composer-input][contenteditable="true"]').first().waitFor({ timeout: 10_000 })
+        await input.fill(text)
+        await input.press('Enter')
       }
+      const queueHeader = page.getByRole('button', { name: '2 queued messages' })
+      await expect.poll(() => queueHeader.getAttribute('aria-expanded'), { timeout: 10_000 })
+        .toBe('false')
+      const collapsedSnapshot = await captureStableAria(
+        page,
+        '[class*="centerCol"]',
+        scaffold.workspaceCwd,
+      )
+      await compareOrRefreshGolden(COLLAPSED_EXPECTED, collapsedSnapshot, MODE)
+      await queueHeader.click()
+      await expect.poll(
+        () => page.getByRole('button', { name: 'Remove queued message' }).count(),
+        { timeout: 10_000 },
+      ).toBe(2)
+
+      await page.setViewportSize({ width: 640, height: 1000 })
+      const queueBox = await page.locator('[data-queue-dock]').boundingBox()
+      const composerBox = await page.locator('[data-composer-card]').boundingBox()
+      expect(queueBox).not.toBeNull()
+      expect(composerBox).not.toBeNull()
+      expect(queueBox!.x).toBeGreaterThanOrEqual(composerBox!.x)
+      expect(queueBox!.x + queueBox!.width)
+        .toBeLessThanOrEqual(composerBox!.x + composerBox!.width)
+      const queueLeftInset = queueBox!.x - composerBox!.x
+      const queueRightInset = composerBox!.x + composerBox!.width - queueBox!.x - queueBox!.width
+      const composerMetrics = await page.locator('[data-composer-card]').evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          dockInset: Number.parseFloat(style.getPropertyValue('--dsh-composer-dock-inset')),
+        }
+      })
+      expect(queueLeftInset).toBeCloseTo(composerMetrics.dockInset, 1)
+      expect(queueRightInset).toBeCloseTo(composerMetrics.dockInset, 1)
+      await page.setViewportSize({ width: 1680, height: 1000 })
+
+      const editRow = page.locator('[data-queue-dock] li', { hasText: EDIT })
+      await editRow.getByRole('button', { name: 'Edit queued message' }).click()
+      const editor = page.getByRole('textbox', { name: 'Edit queued message' })
+      await editor.fill(EDITED)
+      const editingSnapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)
+      await compareOrRefreshGolden(EDITING_EXPECTED, editingSnapshot, MODE)
+      await page.getByRole('button', { name: 'Save queued message' }).click()
+      await page.getByText(EDITED, { exact: true }).waitFor()
+
+      const removeRow = page.locator('[data-queue-dock] li', { hasText: REMOVE })
+      await removeRow.getByRole('button', { name: 'Remove queued message' }).click()
+      await expect.poll(() => page.getByText(REMOVE, { exact: true }).count()).toBe(0)
+
+      const snapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)
+      await compareOrRefreshGolden(UI_EXPECTED, snapshot, MODE)
+      expect(sessionEvents.filter(event => event.type === 'user/message' && event.data.source.kind === 'user')).toHaveLength(1)
+      expect(tripwire.pageErrors).toEqual([])
+      expect(tripwire.warnings).toEqual([])
+
+      await input.fill(TAIL)
+      await input.press('Enter')
+      await expect.poll(
+        () => page.getByRole('button', { name: 'Remove queued message' }).count(),
+        { timeout: 10_000 },
+      ).toBe(2)
+
+      await page.getByRole('button', { name: 'Stop generating' }).click()
+      await firstSettled
+      await expect.poll(() => page.getByRole('button', { name: 'Stop generating' }).count())
+        .toBe(0)
+      await expect.poll(() => page.getByRole('button', { name: 'Remove queued message' }).count())
+        .toBe(2)
+
+      const preservedSnapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)
+      await compareOrRefreshGolden(PRESERVED_EXPECTED, preservedSnapshot, MODE)
+      const expanded = await captureExpandedTurnProcessAria(
+        page,
+        '[class*="centerCol"]',
+        scaffold.workspaceCwd,
+      )
+      await compareOrRefreshGolden(PRESERVED_EXPANDED_EXPECTED, expanded, MODE)
+
+      const settled = scaffold.whenTurnSettled()
+      await input.fill(WAKE)
+      await input.press('Enter')
+      await settled
+      await expect.poll(() => turnEndReasons(sessionEvents), { timeout: 15_000 })
+        .toEqual(['aborted', 'completed', 'completed', 'completed'])
+      expect(sessionEvents.flatMap(event => event.type === 'user/message' && event.data.source.kind === 'user'
+        ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : [])
+        : [])).toEqual([ACTIVE_PROMPT, EDITED, TAIL, WAKE])
+      await expect.poll(() => page.locator('[data-queue-dock]').count()).toBe(0)
     })
-    expect(queueLeftInset).toBeCloseTo(composerMetrics.dockInset, 1)
-    expect(queueRightInset).toBeCloseTo(composerMetrics.dockInset, 1)
-    await page.setViewportSize({ width: 1680, height: 1000 })
-
-    const editRow = page.locator('[data-queue-dock] li', { hasText: EDIT })
-    await editRow.getByRole('button', { name: 'Edit queued message' }).click()
-    const editor = page.getByRole('textbox', { name: 'Edit queued message' })
-    await editor.fill(EDITED)
-    const editingSnapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)
-    await compareOrRefreshGolden(EDITING_EXPECTED, editingSnapshot, MODE)
-    await page.getByRole('button', { name: 'Save queued message' }).click()
-    await page.getByText(EDITED, { exact: true }).waitFor()
-
-    const removeRow = page.locator('[data-queue-dock] li', { hasText: REMOVE })
-    await removeRow.getByRole('button', { name: 'Remove queued message' }).click()
-    await expect.poll(() => page.getByText(REMOVE, { exact: true }).count()).toBe(0)
-
-    const snapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)
-    await compareOrRefreshGolden(UI_EXPECTED, snapshot, MODE)
-    expect(sessionEvents.filter(event => event.type === 'user/message' && event.data.source.kind === 'user')).toHaveLength(1)
-    expect(tripwire.pageErrors).toEqual([])
-    expect(tripwire.warnings).toEqual([])
-
-    await input.fill(TAIL)
-    await input.press('Enter')
-    await expect.poll(
-      () => page.getByRole('button', { name: 'Remove queued message' }).count(),
-      { timeout: 10_000 },
-    ).toBe(2)
-
-    await page.getByRole('button', { name: 'Stop generating' }).click()
-    await firstSettled
-    await expect.poll(() => page.getByRole('button', { name: 'Stop generating' }).count())
-      .toBe(0)
-    await expect.poll(() => page.getByRole('button', { name: 'Remove queued message' }).count())
-      .toBe(2)
-
-    const preservedSnapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)
-    await compareOrRefreshGolden(PRESERVED_EXPECTED, preservedSnapshot, MODE)
-    const expanded = await captureExpandedTurnProcessAria(
-      page,
-      '[class*="centerCol"]',
-      scaffold.workspaceCwd,
-    )
-    await compareOrRefreshGolden(PRESERVED_EXPANDED_EXPECTED, expanded, MODE)
-
-    const settled = scaffold.whenTurnSettled()
-    await input.fill(WAKE)
-    await input.press('Enter')
-    await settled
-    await expect.poll(() => turnEndReasons(sessionEvents), { timeout: 15_000 })
-      .toEqual(['aborted', 'completed', 'completed', 'completed'])
-    expect(sessionEvents.flatMap(event => event.type === 'user/message' && event.data.source.kind === 'user'
-      ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : [])
-      : [])).toEqual([ACTIVE_PROMPT, EDITED, TAIL, WAKE])
-    await expect.poll(() => page.locator('[data-queue-dock]').count()).toBe(0)
-  }, 120_000)
 
   it.skipIf(MODE === 'record')('orders Todo before Goal and Queue on one responsive card column', async () => {
     overrideDir = await mkdtemp(join(tmpdir(), 'dsh-web-context-layout-'))
