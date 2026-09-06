@@ -131,3 +131,11 @@
 - **审查验证结果全部确认**（审查者复跑：定向单测 56/56、6 e2e 10/10、expected 2/2、全量 e2e 137/0 失败、双 node md-wrap 2292、ci:static 45/45、全量单测 18332/0 失败、hygiene 16/16、ci-workflow+manifest 28/28、三补丁 reverse-check、beta 27/27）——与自报矩阵一致，无虚报。
 - 本轮零源码改动；commit 拆分授权的阻塞项已清除（剩：commit 时 lockfile 若变需同步再生成 manifest）。
 - **beta 已用新 manifest 重启**：旧进程启动时加载的是修正前 manifest；重启后加载再生成的 beta.json（node 24.11.1 进程实证），27/27 全链路验收复跑通过。3000 production 未动。
+
+### commit 拆分落地（2026-09-06 第八轮，人审授权）
+
+- **10 个 commit 入库**（master 领先 origin 11，**未 push**）：① `5866abf98a` compat port seam；② `2deccba10f` bridge 经 NexusDshPort（含 lockfile）；③ `041353d144` startup HTTP 面 + 隔离门禁；④ `0b4ce14d5a` 双环境启动器 + release manifest + node-version-pin + .nvmrc；⑤ `bd4c15e0d1` agent-loop loader 安定门（F1）；⑥ `b95c4c9103` ACP 冗余通知抑制（F2）；⑦ `b51f1d521f` Node 24.11.1 钉点 + md-wrap glob 适配（F3）；⑧ `eb01e5e03d` nexusDsh 目录/生成文档集成；⑨ `61a90a7525` queue-actions e2e 稳定性；⑩ `b99332293c` 项目文档 + 迁移记录 + 二开补丁。
+- **拆分期间 lockfile 零变动**：SHA `7f136d…` 与 manifest 保持一致（审查警示条件未触发，无需再生成）。
+- **lefthook whitespace 拦截与解决**：补丁文件的 unified-diff 空行上下文（单空格）触发 `git diff --cached --check`；以 `.gitattributes` 对 `migration/patches/*.patch` 豁免 trailing-space（补丁逐字节未动，reverse-check 复验通过）。全部 hooks 原生通过，未用 --no-verify。
+- **剩余 35 项未提交全部为用户既有内容**（ui-settings-nexus 包主体、slot-catalog、tsconfig.client.json、cli reference README、用户 Agent Note ×6、bridge 旧 .disabled/.backup/.stub ×7），按五步方案第 5 步由用户单独处置。
+- 二开保护升级：commit 为第一层，补丁降级为第二层保险（fork-modifications 清单已更新）。

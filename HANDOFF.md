@@ -214,6 +214,27 @@ PATH="/tmp/py314-bin:$PATH" pnpm run test
 
 **beta 已用新 manifest 重启**：旧进程启动时加载的是修正前 manifest，重启后（PID 71274，node 24.11.1 实证）加载再生成的 `release-manifests/beta.json`，27/27 全链路验收复跑通过。新 token：`http://127.0.0.1:3088/?token=aEQ2Obkq8b0hwO_qFuFFICvkQaSnY5wKB29MRxi7WA4`。3000 production 未动。
 
+## 第八轮（2026-09-06）· commit 拆分执行（人审授权：第七轮审查结论"技术上可以进入 commit 拆分"）
+
+> 审查前置两处文档修正已先行完成（HANDOFF 剩余项勘误、审查包 18331/1→标注历史+复核 18332/0）。拆分期间 `pnpm-lock.yaml` 内容零变动（SHA `7f136d…` 与 manifest 一致，无需再生成）。**未 push**（master 领先 origin 11）；3000/3088 全程未动。
+
+| # | Commit | 内容 |
+|---|---|---|
+| 1 | `5866abf98a` `feat(nexus): add dsh-host-nexus-compat port seam` | compat 包（17 文件）+ Agent Note ×3 + 根 tsconfig.host.json + tsconfig.base.json 别名 + ui-settings-nexus/tsconfig.host.json |
+| 2 | `2deccba10f` `refactor(nexus): route the bridge through NexusDshPort` | nexus-bridge 主体（README/package/tsconfig/8 源码/8 spec + helpers）+ web-app 接线（patch.yml/package.json）+ pnpm-lock + web-agent-presets/preview-boot 适配 |
+| 3 | `041353d144` `test(nexus): startup HTTP surface + isolation gates` | web-app startup.spec（⚠ 含用户既有修改）+ isolation.gate.spec |
+| 4 | `0b4ce14d5a` `feat(nexus): dual web environments with release manifests` | environment.ts + environment/plugin-manifest specs + run-web-env.ts + node-version-pin.ts/.spec + .nvmrc（24.11.1）+ 根 package.json web 脚本 + release-manifests/（再生成后版本） |
+| 5 | `bd4c15e0d1` `fix(agent-loop): wait for loader tree before reading session persistence` | F1：agent-loop src/package.json + loader-composition.spec 回归 |
+| 6 | `b95c4c9103` `fix(acp): suppress redundant config-option notifications` | F2：acp session.ts |
+| 7 | `b51f1d521f` `chore(ci): pin node 24.11.1 and adapt md-wrap glob` | F3：15 workflows + verify-md-wrap 固定深度模式 |
+| 8 | `eb01e5e03d` `docs(nexus): integrate nexusDsh into catalogs and generated docs` | gen-cordis-catalog/gen-doc-graphs/api-catalog + 14 个生成文档 |
+| 9 | `61a90a7525` `test(web): stabilize queue-actions e2e retries` | queue-actions 限定 retry（KNOWN_ISSUES #9） |
+| 10 | `b99332293c` `docs(nexus): migration records, handoff, and fork patches` | 四份项目文档 + migration/（清单/审查包/二开补丁）+ .gitattributes 补丁豁免 |
+
+**拆分执行说明**：① 与五步方案的偏差——lockfile 按原方案随 commit 2；`.nvmrc`+`node-version-pin` 随 commit 4（run-web-env 运行时依赖 .nvmrc，先于 F3 落盘保证自洽）；ui-settings-nexus/tsconfig.host.json 提前到 commit 1（根 tsconfig.host.json 的 reference 需立即可解析）。② lefthook whitespace hook 曾拦截 commit 10（补丁文件的 unified-diff 空行上下文=单空格，格式固有），以 `.gitattributes` 对 `migration/patches/*.patch` 豁免 trailing-space 解决（补丁逐字节未动，reverse-check 复验通过）。③ 全部 10 个 commit 的 pre-commit hooks（translation-pairing/oxlint/third-party-notices/whitespace/vendor-guard）原生通过，未用 --no-verify。
+
+**剩余未提交（35 项，全部为用户既有内容，按五步方案第 5 步由用户单独处置）**：ui-settings-nexus 包主体（2 M + 13 ??，除已入库的 tsconfig.host.json）、slot-catalog.ts（设置 tab 槽位注册）、tsconfig.client.json、apps/cli/reference README×3、section.expected.md、verify-package-readme-model-experience.ts、用户 Agent Note ×6（2026-08-25 ×3、sessioncontroller ×3）、bridge 旧 .disabled/.backup/.stub 文件 ×7。
+
 ## 下一步
 
 1. **commit 拆分已就绪待人审**：全部门禁绿（tsc/lint/duplication/check:ci:static 45/45/test:web:built/hygiene/全量单测/e2e **src 模式全绿**），按 `migration/worktree-manifest-2026-09-05.md` 的 5 步拆分建议人审后 commit（commit 后把 SHA 回填到上表"适配器绑定"行）。第五轮新增改动建议拆为独立 commit：`fix(agent-loop): wait for loader tree before reading session persistence` + `fix(acp): suppress redundant config-option notifications` + `chore(ci): pin node 24.11.1 and adapt md-wrap glob`（.nvmrc + 15 workflows + fs-ext 重建说明 + verify-md-wrap 模式）。**commit 本身即是最强的二开保护**（tracked 修改入库后 pull 走正常 merge/rebase 而非覆盖）——与 `migration/fork-modifications-2026-09-06.md` 补丁机制互补。
