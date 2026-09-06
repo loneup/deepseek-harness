@@ -1,12 +1,12 @@
 # HANDOFF · 当前交接状态
 
-更新时间：2026-09-07（Nexus 兼容层迁移会话，第八轮：commit 拆分落地 + 复核修正完成，待 push 授权）
+更新时间：2026-09-07（Nexus 兼容层迁移会话，第八轮完成：commit 拆分 + 复核修正 + 已 push 到 fork）
 
 ## 冻结信息（Stage freeze）
 
 | 项 | 值 |
 |---|---|
-| dsh 仓库 | /Users/liyan/deepseek-harness，分支 `master`，领先 origin/master（`d347e70390`）13 个 commit（基线 `c02ff34` 1 个 + 本会话 12 个，含本文件所在的第八轮复核勘误 commit；HEAD SHA 以 `git log -1` 实查为准），**未 push**；工作树剩余 36 项未提交 = 用户既有内容（含从 commit 3 拆回的 startup.spec 两处 3080→3000 hunk，见第八轮记录） |
+| dsh 仓库 | /Users/liyan/deepseek-harness，分支 `master`，HEAD `c7eec33b8d`，**已 push 到 fork `loneup/deepseek-harness` master**（2026-09-07，SSH 通道，fast-forward `47f943859b..c7eec33b8d`；fork remote 已配置为 `git@github.com:loneup/deepseek-harness.git`）。上游 `deepseek-ai/deepseek-harness`（origin）无写权限——git HTTPS 凭证（loneup）与 gh CLI（incvi）均被拒（403 / push:false），且 OAuth token 缺 `workflow` scope 会拒收 workflow 文件改动，**推送必须走 SSH**。工作树剩余 36 项未提交 = 用户既有内容（含从 commit 3 拆回的 startup.spec 两处 3080→3000 hunk，见第八轮记录） |
 | Nexus 仓库 | /Users/liyan/01_Projects/iOS/nexus-app，分支 `main`，HEAD `258f9d00cea230481059ce339358cdeacfd82296`，工作树干净，未修改 |
 | dsh 版本 | 0.1.3-alpha.1 |
 | 适配器绑定 | Dsh013Adapter ↔ Nexus Port v1 ↔ dsh `0.1.3-alpha.1` @ `c02ff34`（迁移已 commit：`5866abf98a` compat seam → `2deccba10f` bridge 接线，SHA 已固化） |
@@ -216,7 +216,7 @@ PATH="/tmp/py314-bin:$PATH" pnpm run test
 
 ## 第八轮（2026-09-06）· commit 拆分执行（人审授权：第七轮审查结论"技术上可以进入 commit 拆分"）
 
-> 审查前置两处文档修正已先行完成（HANDOFF 剩余项勘误、审查包 18331/1→标注历史+复核 18332/0）。拆分期间 `pnpm-lock.yaml` 内容零变动（SHA `7f136d…` 与 manifest 一致，无需再生成）。**未 push**（拆分时点领先 origin 12 = 基线 1 + 本会话 11；第八轮复核修正 commit 后为 13，见冻结信息）；3000/3088 全程未动。
+> 审查前置两处文档修正已先行完成（HANDOFF 剩余项勘误、审查包 18331/1→标注历史+复核 18332/0）。拆分期间 `pnpm-lock.yaml` 内容零变动（SHA `7f136d…` 与 manifest 一致，无需再生成）。拆分与复核时点均未 push（领先 origin 12→13）；**现已 push 到 fork，见冻结信息行与 CHANGELOG push 节**。3000/3088 全程未动。
 
 | # | Commit | 内容 |
 |---|---|---|
@@ -241,11 +241,11 @@ PATH="/tmp/py314-bin:$PATH" pnpm run test
 
 ### 第八轮复核 P1 修正（commit 3 hunk 拆回，2026-09-06）
 
-复核发现 commit 3（现 `dea5dcf2b4`，原 `041353d144`）混入两处提交前已有的用户修改（startup.spec.ts 的 fixture 默认端口与其期望值 3080→3000，成对自洽，与新 HTTP 面测试无关；`stash@{0}` nexus-wip-before-update-2026-09-05 实证）。处置：**外科 rebase 拆回**——`GIT_SEQUENCE_EDITOR` 脚本化 `git rebase -i --autostash` 停在 commit 3，两行 sed 还原 3080 原值后 amend，`git rebase --continue` 重放后续 8 个 commit（无冲突），再把 3000 版本恢复回工作树成为未提交改动。验证：**3080（committed）与 3000（工作树）双版本 startup.spec 各 8/8 通过**；三补丁 reverse-check 复验通过；lockfile 零变动。**代价：commit 3-11 的 SHA 全部改写**（本文件与 CHANGELOG/fork 清单已同步更新为新 SHA）；因未 push，改写无外部影响。
+复核发现 commit 3（现 `dea5dcf2b4`，原 `041353d144`）混入两处提交前已有的用户修改（startup.spec.ts 的 fixture 默认端口与其期望值 3080→3000，成对自洽，与新 HTTP 面测试无关；`stash@{0}` nexus-wip-before-update-2026-09-05 实证）。处置：**外科 rebase 拆回**——`GIT_SEQUENCE_EDITOR` 脚本化 `git rebase -i --autostash` 停在 commit 3，两行 sed 还原 3080 原值后 amend，`git rebase --continue` 重放后续 8 个 commit（无冲突），再把 3000 版本恢复回工作树成为未提交改动。验证：**3080（committed）与 3000（工作树）双版本 startup.spec 各 8/8 通过**；三补丁 reverse-check 复验通过；lockfile 零变动。**代价：commit 3-11 的 SHA 全部改写**（本文件与 CHANGELOG/fork 清单已同步更新为新 SHA）；改写时点未 push，无外部影响（push 发生在其后）。
 
 ## 下一步
 
-1. **commit 拆分已完成（第八轮，人审授权），待 push 授权**：12 个 commit 已入库（10 个迁移 commit + 1 个拆分记录 commit + 1 个复核修正 commit，见第八轮节 SHA 表）；第八轮复核后已把 commit 3 中两处未经授权的用户既有 hunk（startup.spec 3080→3000）拆回工作树。剩余待办：① push 需人审明确授权（当前领先 origin 13，含本勘误 commit）；② 工作树 36 项用户既有内容由用户单独处置（建议：ui-settings-nexus 包 + slot-catalog + tsconfig.client.json 作为一个 `feat` commit；bridge 旧 `.disabled/.backup/.stub` ×7 确认无用后删除）。
+1. **commit 已 push 到 fork（2026-09-07，人审授权）**：12 个 commit（10 迁移 + 1 拆分记录 + 1 复核修正）随 master fast-forward 推到 `loneup/deepseek-harness`（`47f943859b..c7eec33b8d`，SSH 通道；上游 403 与 workflow-scope 细节见冻结信息行）。后续可选项：从 fork 向上游 `deepseek-ai/deepseek-harness` 开 PR（人工决策）。剩余待办：工作树 36 项用户既有内容由用户单独处置（建议：ui-settings-nexus 包 + slot-catalog + tsconfig.client.json 作为一个 `feat` commit；bridge 旧 `.disabled/.backup/.stub` ×7 确认无用后删除；处置后同样经 fork 推送）。
 2. **Python PATH 永久修复（人审决策）**：把 `/opt/homebrew/bin` 提前（`.zshrc` 早段 `eval "$(/opt/homebrew/bin/brew shellenv)"`）或引入仓库级 Python 版本管理。
 3. 真机 Golden Path 验收（配对 → 会话 → turn → 审批应答 → 断线恢复）——需要真机，属于人工验收；协议层已由单测与真实链路验收覆盖。
 4. Agent Note 从 proposed 转正由人裁决。

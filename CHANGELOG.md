@@ -134,9 +134,15 @@
 
 ### commit 拆分落地（2026-09-06 第八轮，人审授权）
 
-- **12 个 commit 入库**（10 个迁移 commit + 1 个拆分记录 commit + 1 个复核修正 commit；拆分时点领先 origin 12，复核修正后为 13 = 基线 1 + 本会话 12，**未 push**）：① `5866abf98a` compat port seam；② `2deccba10f` bridge 经 NexusDshPort（含 lockfile）；③ `dea5dcf2b4` startup HTTP 面 + 隔离门禁；④ `eeabff9e88` 双环境启动器 + release manifest + node-version-pin + .nvmrc；⑤ `647d1ad3a9` agent-loop loader 安定门（F1）；⑥ `44f9717a7a` ACP 冗余通知抑制（F2）；⑦ `7795178dc8` Node 24.11.1 钉点 + md-wrap glob 适配（F3）；⑧ `2cfb7c9efb` nexusDsh 目录/生成文档集成；⑨ `c35e82c5a0` queue-actions e2e 稳定性；⑩ `4b5963abf0` 项目文档 + 迁移记录 + 二开补丁；⑪ `059441b760` 拆分记录文档；⑫ 复核修正（P1 hunk 拆回 + 文档状态同步，SHA 以 `git log -1` 实查为准）。
+- **12 个 commit 入库**（10 个迁移 commit + 1 个拆分记录 commit + 1 个复核修正 commit；拆分时点领先 origin 12，复核修正后为 13 = 基线 1 + 本会话 12；入库时点未 push，现已推到 fork，见下节）：① `5866abf98a` compat port seam；② `2deccba10f` bridge 经 NexusDshPort（含 lockfile）；③ `dea5dcf2b4` startup HTTP 面 + 隔离门禁；④ `eeabff9e88` 双环境启动器 + release manifest + node-version-pin + .nvmrc；⑤ `647d1ad3a9` agent-loop loader 安定门（F1）；⑥ `44f9717a7a` ACP 冗余通知抑制（F2）；⑦ `7795178dc8` Node 24.11.1 钉点 + md-wrap glob 适配（F3）；⑧ `2cfb7c9efb` nexusDsh 目录/生成文档集成；⑨ `c35e82c5a0` queue-actions e2e 稳定性；⑩ `4b5963abf0` 项目文档 + 迁移记录 + 二开补丁；⑪ `059441b760` 拆分记录文档；⑫ 复核修正（P1 hunk 拆回 + 文档状态同步，SHA 以 `git log -1` 实查为准）。
 - **第八轮复核 P1 修正**：commit 3 曾混入两处提交前已有的用户修改（startup.spec 3080→3000，stash 实证未经单独授权），已外科 rebase 拆回工作树（commit 3-11 SHA 相应改写为上表现值）；3080/3000 双版本 startup.spec 各 8/8 通过。
 - **拆分期间 lockfile 零变动**：SHA `7f136d…` 与 manifest 保持一致（审查警示条件未触发，无需再生成）。
 - **lefthook whitespace 拦截与解决**：补丁文件的 unified-diff 空行上下文（单空格）触发 `git diff --cached --check`；以 `.gitattributes` 对 `migration/patches/*.patch` 豁免 trailing-space（补丁逐字节未动，reverse-check 复验通过）。全部 hooks 原生通过，未用 --no-verify。
 - **剩余 36 项未提交全部为用户既有内容**（ui-settings-nexus 包主体、slot-catalog、tsconfig.client.json、cli reference README、用户 Agent Note ×6、bridge 旧 .disabled/.backup/.stub ×7、拆回的 startup.spec 两处 hunk），按五步方案第 5 步由用户单独处置。
 - 二开保护升级：commit 为第一层，补丁降级为第二层保险（fork-modifications 清单已更新）。
+
+### push 到 fork（2026-09-07，人审授权）
+
+- **master 已推到 `loneup/deepseek-harness`**（fast-forward `47f943859b..c7eec33b8d`，SSH 通道，fork remote = `git@github.com:loneup/deepseek-harness.git`）：12 个会话 commit + 上游同步（fork 此前落后 2930 commit）。
+- **推送通道事实（后续会话必读）**：上游 `deepseek-ai/deepseek-harness`（origin）对本地两个身份均无写权限——git HTTPS 凭证（loneup，403 denied）与 gh CLI（incvi，push:false）；且 loneup 的 OAuth token 缺 `workflow` scope，含 workflow 文件的推送走 HTTPS 会被拒（remote rejected），**必须走 SSH**（SSH key 属 loneup，对 fork 有属主权限）。pre-push typecheck hook 在 node 24 下通过（6.4s）。
+- 后续可选：从 fork 向上游开 PR（人工决策）。
